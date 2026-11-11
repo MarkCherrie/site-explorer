@@ -2,7 +2,7 @@
 
 Pick an area in Europe and see it in 3D: sea depths and land heights as animated contours, with wind turbines, a water layer and the live wind forecast.
 
-**Open it:** https://<user>.github.io/<repo>/
+**Open it:** https://markcherrie.github.io/site-explorer/
 
 ## Data
 - Sea depths: [EMODnet Bathymetry](https://emodnet.ec.europa.eu/en/bathymetry)
