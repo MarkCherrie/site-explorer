@@ -1,0 +1,2028 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Renewable generation site explorer</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    --bg: #111; --panel: #1a1a1a; --panel2: #242424; --line: #2e2e2e;
+    --text: #e6e6e6; --muted: #9a9a9a; --accent: #4fc3a1; --accent-ink: #04261c; --err: #ff8a80;
+    --side-w: 380px; --rail-w: 44px;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font: 13px/1.45 system-ui, -apple-system, sans-serif; }
+  button { font: inherit; color: inherit; cursor: pointer; border: 0; border-radius: 6px; background: var(--panel2); padding: 6px 10px; }
+  button:hover { background: #2e2e2e; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.active { outline: 2px solid var(--accent); }
+  :is(button, input, select, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input[type=number], input[type=search], select { background: #111; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; font: inherit; width: 100%; }
+  input[type=range], input[type=checkbox] { accent-color: var(--accent); }
+  input[type=range] { width: 100%; margin: 2px 0 0; }
+  .muted { color: var(--muted); }
+  .small { font-size: 11px; }
+
+  /* ---- full-screen 3D view ---- */
+  #view { position: fixed; inset: 0; }
+  #view canvas { display: block; }
+  #empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 4px; color: var(--muted); pointer-events: none; padding-left: var(--side-w); text-align: center; transition: padding .25s ease; }
+  #empty b { color: var(--text); font-size: 15px; font-weight: 600; }
+  body.collapsed #empty { padding-left: var(--rail-w); }
+
+  /* ---- left panel: the main task (find → box → render) ---- */
+  #side { position: fixed; top: 0; left: 0; bottom: 0; width: var(--side-w); z-index: 1000; display: flex; flex-direction: column;
+    background: var(--panel); border-right: 1px solid var(--line); transition: transform .25s ease; }
+  body.collapsed #side { transform: translateX(-100%); }
+  #rail { position: fixed; top: 0; left: 0; bottom: 0; width: var(--rail-w); z-index: 999; display: flex; flex-direction: column;
+    align-items: center; gap: 12px; padding-top: 10px; background: var(--panel); border-right: 1px solid var(--line); }
+  body:not(.collapsed) #rail { display: none; }
+  #rail button { width: 32px; height: 32px; padding: 0; font-size: 15px; }
+  #rail .label { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 11px; color: var(--muted);
+    letter-spacing: .02em; cursor: pointer; user-select: none; }
+  .side-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .side-head h1 { font-size: 14px; margin: 0; font-weight: 600; }
+  .pad { padding: 10px 12px; }
+  .step { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
+  #searchForm { display: flex; gap: 6px; }
+  #results { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; max-height: 150px; overflow: auto; }
+  #results:empty { display: none; }
+  #results button { text-align: left; background: #202020; font-size: 12px; padding: 5px 8px; }
+  #results small { color: var(--muted); }
+  .maptools { display: flex; align-items: center; gap: 8px; }
+  #map { flex: 1; min-height: 200px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  #go { width: 100%; margin-top: 8px; padding: 10px; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 14px; }
+  #go:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+  #status { font-size: 12px; color: var(--muted); white-space: pre-wrap; margin-top: 8px; }
+  #status:empty { display: none; }
+  #status.err { color: var(--err); }
+  details { border-top: 1px solid var(--line); }
+  summary { cursor: pointer; padding: 9px 12px; color: var(--muted); font-size: 12px; list-style: none; user-select: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸  "; }
+  details[open] summary::before { content: "▾  "; }
+  .more { padding: 0 12px 12px; display: grid; gap: 10px; max-height: 42vh; overflow: auto; }
+  .more label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+  .bbox { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .btnrow { display: flex; flex-wrap: wrap; gap: 6px; }
+  .leaflet-container.drawing { cursor: crosshair; }
+  .handle { width: 12px; height: 12px; background: var(--accent); border: 2px solid var(--accent-ink); border-radius: 2px; }
+  .handle.move { border-radius: 50%; background: #fff; cursor: move; }
+
+  /* ---- overlays on the view ---- */
+  .card { background: rgba(18,18,18,.84); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    border: 1px solid var(--line); border-radius: 8px; }
+  #hud { position: fixed; bottom: 12px; left: calc(var(--side-w) + 12px); width: 260px; padding: 10px 12px; z-index: 500;
+    transition: left .25s ease; }
+  body.collapsed #hud { left: calc(var(--rail-w) + 12px); }
+  #hud b { font-variant-numeric: tabular-nums; color: #fff; }
+  #hud .hudtitle { font-size: 14px; font-weight: 600; color: var(--text); }
+  #hud .hudline { margin-top: 6px; }
+  .hudrow { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .hudrow > div:first-child { white-space: nowrap; }
+  .hudrow .btnrow { flex-wrap: nowrap; gap: 4px; }
+  .hudrow .btnrow button { width: 28px; padding: 4px 0; text-align: center; }
+  #hud.folded #hudBody { display: none; }
+  .bar { height: 8px; margin-top: 6px; border-radius: 2px; }
+  .ends { display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--muted); }
+  #optBtn { position: fixed; top: 12px; right: 12px; z-index: 600; padding: 7px 12px; }
+  #hud .sec { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+  #windInfo { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .iconbtn { width: 28px; height: 28px; padding: 0; line-height: 1; }
+  .gorow { display: flex; gap: 6px; margin-top: 8px; }
+  .gorow #go { margin-top: 0; flex: 1; }
+  #tour { flex: none; padding: 10px 12px; font-weight: 600; }
+  #toast { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 700; padding: 8px 10px 8px 14px;
+    display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+  #toast b { color: #fff; }
+  #rose { display: block; flex: none; }
+  #rose text { fill: var(--muted); font: 600 30px system-ui, sans-serif; }
+  .roserow { display: flex; gap: 10px; align-items: center; margin-top: 4px; }
+  .rosecol { flex: 1; min-width: 0; }
+  #optBtn[aria-expanded="true"] { outline: 2px solid var(--accent); }
+  #opts { position: fixed; top: 54px; right: 12px; width: 280px; max-height: calc(100vh - 66px); overflow: auto;
+    padding: 12px; z-index: 600; display: grid; gap: 10px; }
+  #opts label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+  #opts label.check { flex-direction: row; align-items: center; gap: 8px; }
+  #opts .grp { font-size: 12px; font-weight: 600; color: var(--muted); padding-top: 4px;
+    border-top: 1px solid var(--line); }
+  #opts .grp:first-child { border-top: 0; padding-top: 0; }
+  .seg { display: flex; gap: 4px; }
+  .seg button { flex: 1; }
+
+  @media (max-width: 700px) {
+    :root { --side-w: 100vw; }
+    #hud { left: 12px !important; right: 12px; width: auto; }
+    body:not(.collapsed) :is(#hud, #optBtn, #opts) { display: none !important; }
+    #empty { padding-left: 0 !important; }
+  }
+</style>
+</head>
+<body>
+<main id="view">
+  <div id="empty"><b>Draw a box, then Render</b><span>The 3D view will fill this space.</span></div>
+</main>
+
+<!-- collapsed state: thin bar on the left -->
+<div id="rail">
+  <button id="expand" title="Show area panel" aria-label="Show area panel">☰</button>
+  <span class="label" id="railLabel">Area &amp; render</span>
+</div>
+
+<aside id="side" aria-label="Area and render">
+  <div class="side-head">
+    <h1>Renewable generation site explorer</h1>
+    <button id="collapse" title="Hide panel (full-screen view)" aria-label="Hide panel">«</button>
+  </div>
+
+  <div class="pad">
+    <div class="step">1 · Find a place <span style="font-weight:400">(optional)</span></div>
+    <form id="searchForm">
+      <input id="q" type="search" placeholder="e.g. Moray Firth, Hardangerfjord" autocomplete="off">
+      <button type="submit">Search</button>
+    </form>
+    <div id="results"></div>
+  </div>
+
+  <div class="pad" style="padding-bottom:8px">
+    <div class="step">2 · Set the area</div>
+    <div class="maptools">
+      <div class="seg" role="group" aria-label="Area shape">
+        <button id="shapeBox" aria-pressed="true">▭ Box</button>
+        <button id="shapeCircle" aria-pressed="false">◯ Circle</button>
+      </div>
+      <button id="draw">Draw</button>
+      <span class="small muted">or drag its handles</span>
+    </div>
+  </div>
+  <div id="map"></div>
+
+  <div class="pad">
+    <div class="small muted" id="size"></div>
+    <div class="gorow">
+      <button id="go">Render</button>
+      <button id="tour" title="Render, then add terraced relief, OSM turbines, a side-on view, wind, and loop the forecast">▶ Render + tour</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <details id="more">
+    <summary>More options</summary>
+    <div class="more">
+      <div class="bbox" id="boxInputs">
+        <label>North <input id="n" type="number" step="0.01"></label>
+        <label>South <input id="s" type="number" step="0.01"></label>
+        <label>West <input id="w" type="number" step="0.01"></label>
+        <label>East <input id="e" type="number" step="0.01"></label>
+      </div>
+      <div class="bbox" id="circleInputs" hidden>
+        <label>Centre latitude <input id="clat" type="number" step="0.01"></label>
+        <label>Centre longitude <input id="clon" type="number" step="0.01"></label>
+        <label>Radius (km) <input id="crad" type="number" step="0.5" min="1" max="250"></label>
+      </div>
+      <label>Grid detail
+        <select id="detail">
+          <option value="250">Low · 250 cells on long side</option>
+          <option value="500" selected>Medium · 500 cells</option>
+          <option value="800">High · 800 cells</option>
+          <option value="native">Native EMODnet (~115 m)</option>
+        </select>
+      </label>
+      <label>Land heights
+        <select id="landsrc">
+          <option value="srtm" selected>SRTM (AWS Terrain Tiles)</option>
+          <option value="emodnet">EMODnet DTM land values</option>
+          <option value="none">None — flat at 0 m</option>
+        </select>
+      </label>
+      <div>
+        <div class="small muted" style="margin-bottom:4px">Download the processed data</div>
+        <div class="btnrow">
+          <button id="saveElev" disabled>Elevation JSON</button>
+          <button id="saveJson" disabled>Depth JSON</button>
+          <button id="saveTif" disabled>EMODnet GeoTIFF</button>
+        </div>
+      </div>
+      <div class="small muted">
+        EMODnet covers European seas only (dashed outline on the map).
+        Sea: EMODnet Bathymetry DTM. Land: SRTM-based
+        <a href="https://registry.opendata.aws/terrain-tiles/" style="color:inherit">AWS Terrain Tiles</a>.
+        Turbines: <a href="https://zenodo.org/records/23160399" style="color:inherit">DeepOWT</a> (CC-BY-4.0).
+        Elevation JSON is signed metres (land +, sea −); depth JSON is positive depth.
+      </div>
+    </div>
+  </details>
+</aside>
+
+<!-- legend + playback (bottom-left of the view) -->
+<div id="hud" class="card" hidden>
+  <div class="hudrow">
+    <div class="hudtitle">Legend</div>
+    <div class="btnrow">
+      <button id="play" title="Pause contour animation" aria-label="Pause contour animation">❚❚</button>
+      <button id="restart" title="Restart contour animation" aria-label="Restart contour animation">↺</button>
+      <button id="hudToggle" title="Collapse legend" aria-label="Collapse legend" aria-expanded="true" aria-controls="hudBody">▾</button>
+    </div>
+  </div>
+  <div id="hudBody">
+  <div class="hudline">Contour interval <b id="ival">–</b> m <span class="small muted">· <span id="nlines">0</span> lines</span></div>
+  <div id="landRow">
+    <div class="bar" id="landBar"></div>
+    <div class="ends"><span>0 m</span><span>land · <span id="lival"></span> m steps</span><span id="maxh"></span></div>
+  </div>
+  <div class="bar" id="seaBar"></div>
+  <div class="ends"><span>0 m</span><span id="maxd"></span></div>
+  <div id="windRow" hidden>
+    <div id="windInfo" class="small"></div>
+    <div class="bar" id="windBar"></div>
+    <div class="ends"><span>0 m/s</span><span>wind speed</span><span id="windMax"></span></div>
+  </div>
+  <!-- prevailing wind (wind rose), part of the same legend -->
+  <div id="roseSec" class="sec" hidden aria-live="polite">
+  <div class="hudrow">
+    <div>Prevailing wind <b id="roseDir">–</b></div>
+    <button id="roseClose" class="iconbtn" title="Hide wind summary" aria-label="Hide wind summary">×</button>
+  </div>
+  <div class="roserow">
+    <svg id="rose" viewBox="-100 -100 200 200" width="74" height="74" role="img" aria-label="Wind rose"></svg>
+    <div class="rosecol">
+      <div id="roseSub" class="small muted">Loading a year of wind data…</div>
+      <div class="bar" id="roseBar"></div>
+      <div class="ends"><span>0</span><span>mean speed, m/s</span><span>20</span></div>
+    </div>
+  </div>
+  </div>
+  </div>
+</div>
+
+<!-- sequence step caption (top centre) -->
+<div id="toast" class="card" hidden role="status"><span id="toastText"></span><button id="toastStop">Stop</button></div>
+
+<!-- view options (top-right) -->
+<button id="optBtn" class="card" hidden aria-expanded="false" aria-controls="opts">⚙ Options</button>
+<div id="opts" class="card" hidden>
+  <div class="grp">Shape</div>
+  <label><span>Vertical exaggeration <span id="exv" class="muted"></span></span>
+    <input id="ex" type="range" min="0.05" max="2" step="0.05" value="0.2"></label>
+  <label><span>Finest contour detail</span>
+    <select id="levels">
+      <option value="15">15 levels</option>
+      <option value="30" selected>30 levels</option>
+      <option value="50">50 levels</option>
+      <option value="100">100 levels</option>
+    </select></label>
+
+  <div class="grp">Surface</div>
+  <label><span>Draped surface</span>
+    <select id="surf">
+      <option value="off" selected>Off</option>
+      <option value="terraced">Terraced (follows interval)</option>
+      <option value="smooth">Smooth relief</option>
+      <option value="map:emodnet">Map: EMODnet bathymetry</option>
+      <option value="map:osm">Map: OpenStreetMap (HOT)</option>
+      <option value="map:otm">Map: OpenTopoMap</option>
+    </select>
+    <span id="surfMsg" class="small muted"></span></label>
+  <label id="surfOpRow" hidden><span>Opacity <span id="surfOpV" class="muted"></span></span>
+    <input id="surfOp" type="range" min="0.1" max="1" step="0.05" value="0.95"></label>
+
+  <div class="grp">Layers</div>
+  <label class="check"><input type="checkbox" id="waterOn" checked> Water (sea-level surface + volume)</label>
+  <div>
+    <label class="check"><input type="checkbox" id="turbOn"> DeepOWT turbines (offshore, Europe)</label>
+    <label class="check"><input type="checkbox" id="onshoreOn"> OSM turbines (UK, onshore + offshore)</label>
+    <div id="turbN" class="small muted" style="margin-left:24px"></div>
+  </div>
+  <label id="turbSizeRow" hidden><span>Turbine hub height
+      <input id="turbHubN" type="number" min="10" max="400" step="10" value="120"
+        style="width:76px;display:inline-block;padding:2px 6px;margin-left:4px"> m</span>
+    <input id="turbSize" type="range" min="10" max="400" step="10" value="120" aria-label="Turbine hub height in metres"></label>
+  <div>
+    <label class="check"><input type="checkbox" id="windOn"> Wind (Open-Meteo forecast)</label>
+    <div id="windMsg" class="small muted" style="margin-left:24px"></div>
+  </div>
+  <label class="check"><input type="checkbox" id="roseOn" checked> Prevailing wind (in legend)</label>
+  <label id="windHourRow" hidden><span>Forecast time <span id="windHourV" class="muted"></span></span>
+    <input id="windHour" type="range" min="0" max="47" step="1" value="0"></label>
+
+  <div class="grp">Camera</div>
+  <div class="seg"><button data-tilt="0">Top</button><button data-tilt="35">Tilted</button><button data-tilt="80">Side</button></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+<!-- DeepOWT offshore wind turbine locations (Zenodo 23160399, CC-BY-4.0); built by tools/build_deepowt.py -->
+<script src="data/deepowt_locations.js"></script>
+<!-- UK wind turbines from OpenStreetMap, onshore + offshore (ODbL); built by tools/build_osm_onshore.py -->
+<script src="data/osm_turbines.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+
+// DeepOWT turbines as [lon, lat, farm] triples (empty if the data file is missing)
+const TURBINES = (() => {
+  const p = window.DEEPOWT?.points || [], out = [];
+  for (let i = 0; i < p.length; i += 3) out.push({ lon: p[i], lat: p[i + 1], farm: p[i + 2] });
+  return out;
+})();
+// UK turbines from OpenStreetMap (onshore + offshore) as [lon, lat, tip, offshore] (empty if the file is missing)
+const OSM_TURBINES = (() => {
+  const p = window.OSM_TURBINES?.points || [], out = [];
+  for (let i = 0; i < p.length; i += 4) out.push({ lon: p[i], lat: p[i + 1], tip: p[i + 2], osm: true });
+  return out;
+})();
+
+// ---------------------------------------------------------------- settings
+const WCS = "https://ows.emodnet-bathymetry.eu/wcs";
+const COVERAGE = "emodnet:mean";
+const NATIVE_RES = 1 / 960;                 // EMODnet DTM grid, degrees (~115 m)
+const COVER = { w: -70.5, e: 43, s: 11, n: 90 };
+const MAX_CELLS = 2_000_000;                // guard against huge downloads
+const TERRAIN_TILES = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
+const TERRAIN_MAX_Z = 12;                   // ~30 m/px at the equator ≈ SRTM 1″
+const TERRAIN_MAX_TILES = 100;
+// Animation: contour interval goes from coarse (~2 levels) to fine (~maxLevels levels),
+// scaled to each box's relief, in ~FRAMES steps of TICK_MS.
+const TICK_MS = 150, FRAMES = 74;
+const MIN_RING_CELLS = 16;                  // drop closed contour "specks" enclosing fewer grid cells
+const WALL_BRIGHTNESS = 0.04;               // 1 = full-brightness edge wall, 0 = invisible
+const DEFAULT_BBOX = { w: -3.9, s: 57.55, e: -2.7, n: 57.98 };   // Moray Firth
+
+const $ = id => document.getElementById(id);
+const status = (msg, err = false) => { $("status").textContent = msg; $("status").className = err ? "err" : ""; };
+
+// ---------------------------------------------------------------- map + bbox
+const map = L.map("map", { zoomControl: true });
+// EMODnet Bathymetry open-data basemap (no API key): bathymetry shading + land + coastlines
+L.tileLayer("https://tiles.emodnet-bathymetry.eu/2020/baselayer/web_mercator/{z}/{x}/{y}.png", {
+  maxZoom: 12, attribution: '<a href="https://emodnet.ec.europa.eu/en/bathymetry">EMODnet Bathymetry</a>'
+}).addTo(map);
+
+// Coverage: shade everything outside the EMODnet DTM extent, outline it, and keep the map near it
+const coverBounds = L.latLngBounds([[COVER.s, COVER.w], [COVER.n, COVER.e]]);
+L.polygon([
+  [[-89, -360], [-89, 360], [89, 360], [89, -360]],
+  [[COVER.s, COVER.w], [COVER.s, COVER.e], [COVER.n, COVER.e], [COVER.n, COVER.w]]
+], { stroke: false, fillColor: "#000", fillOpacity: 0.6, interactive: false }).addTo(map);
+L.rectangle(coverBounds, { color: "#f0c040", weight: 1.5, dashArray: "6 4", fill: false, interactive: false }).addTo(map);
+map.setMaxBounds(coverBounds.pad(0.15));
+map.setMinZoom(2);
+const legend = L.control({ position: "bottomleft" });
+legend.onAdd = () => {
+  const d = L.DomUtil.create("div");
+  d.style.cssText = "background:rgba(0,0,0,.65);color:#eee;padding:4px 8px;border-radius:4px;font:11px system-ui";
+  d.innerHTML = '<span style="color:#f0c040">┅</span> EMODnet coverage (European seas) · shaded = no data';
+  return d;
+};
+legend.addTo(map);
+// Toggleable overlay: offshore wind turbines (DeepOWT)
+const turbLayer = L.layerGroup();
+{
+  const renderer = L.canvas({ padding: 0.5 });
+  for (const t of TURBINES) {
+    if (t.lat < COVER.s || t.lat > COVER.n || t.lon < COVER.w || t.lon > COVER.e) continue;
+    L.circleMarker([t.lat, t.lon], {
+      renderer, radius: 2.5, color: "#fff", weight: 0.8, fillColor: "#ff6a3d", fillOpacity: 0.95, interactive: false
+    }).addTo(turbLayer);
+  }
+}
+// Toggleable overlay: UK wind turbines from OpenStreetMap (onshore + offshore)
+const osmLayer = L.layerGroup();
+{
+  const renderer = L.canvas({ padding: 0.5 });
+  for (const t of OSM_TURBINES) {
+    L.circleMarker([t.lat, t.lon], {
+      renderer, radius: 2.2, color: "#fff", weight: 0.6, fillColor: "#7bd389", fillOpacity: 0.95, interactive: false
+    }).addTo(osmLayer);
+  }
+}
+{
+  const overlays = {};
+  if (TURBINES.length) {
+    overlays['<span style="color:#ff6a3d">●</span> DeepOWT turbines (offshore)'] = turbLayer;
+    turbLayer.addTo(map);
+    map.attributionControl.addAttribution('<a href="https://zenodo.org/records/23160399">DeepOWT</a> (CC-BY-4.0)');
+  }
+  if (OSM_TURBINES.length) {
+    overlays['<span style="color:#7bd389">●</span> OSM turbines (UK)'] = osmLayer;
+    osmLayer.addTo(map);
+    map.attributionControl.addAttribution('OSM turbines © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> (ODbL)');
+  }
+  if (Object.keys(overlays).length)
+    L.control.layers(null, overlays, { collapsed: false, position: "topright" }).addTo(map);
+}
+
+const clampLat = v =>Math.min(COVER.n, Math.max(COVER.s, v));
+const clampLon = v => Math.min(COVER.e, Math.max(COVER.w, v));
+
+// ---------------------------------------------------------------- area selection: box or circle
+// The download is always a lat/lon rectangle (`bbox`). In circle mode that rectangle is the square
+// around the circle, and the 3D view clips everything to the circle.
+let shape = "box";                // "box" | "circle"
+let circle = null;                // { lat, lon, r }  (r in km)
+const hashInit = readHash();
+let bbox = hashInit?.bbox || { ...DEFAULT_BBOX };
+const areaStyle = { color: "#4fc3a1", weight: 2, fillOpacity: 0.08 };
+const rect = L.rectangle(toBounds(bbox), { ...areaStyle, interactive: false });
+const circ = L.circle([0, 0], { ...areaStyle, radius: 1, interactive: false });
+
+function toBounds(b) { return [[b.s, b.w], [b.n, b.e]]; }
+function readHash() {
+  let m = location.hash.match(/circle=([-\d.]+),([-\d.]+),([\d.]+)/);
+  if (m) return { circle: { lat: +m[1], lon: +m[2], r: +m[3] } };
+  m = location.hash.match(/bbox=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)/);
+  return m ? { bbox: { w: +m[1], s: +m[2], e: +m[3], n: +m[4] } } : null;
+}
+const kmPerDegLon = lat => 111.32 * Math.cos(lat * Math.PI / 180);
+function circleToBbox(c) {
+  const dLat = c.r / 110.57, dLon = c.r / kmPerDegLon(c.lat);
+  return { s: c.lat - dLat, n: c.lat + dLat, w: c.lon - dLon, e: c.lon + dLon };
+}
+function writeHash() {
+  history.replaceState(null, "", shape === "circle"
+    ? `#circle=${circle.lat.toFixed(4)},${circle.lon.toFixed(4)},${circle.r.toFixed(2)}`
+    : "#bbox=" + ["w", "s", "e", "n"].map(k => bbox[k].toFixed(4)).join(","));
+}
+function setBbox(b, { fit = false } = {}) {
+  // order the corners and clip to EMODnet coverage
+  bbox = {
+    w: clampLon(Math.min(b.w, b.e)), e: clampLon(Math.max(b.w, b.e)),
+    s: clampLat(Math.min(b.s, b.n)), n: clampLat(Math.max(b.s, b.n))
+  };
+  for (const k of "nswe") $(k).value = bbox[k].toFixed(4);
+  rect.setBounds(toBounds(bbox));
+  syncHandles();
+  if (fit) map.fitBounds(toBounds(bbox), { padding: [20, 20] });
+  writeHash();
+  updateSize();
+  areaChanged();
+}
+function setCircle(c, { fit = false } = {}) {
+  c = { ...c, r: Math.max(1, Math.min(250, c.r)) };
+  // keep the whole circle inside coverage by nudging the centre
+  let b = circleToBbox(c);
+  if (b.s < COVER.s) c.lat += COVER.s - b.s;
+  if (b.n > COVER.n) c.lat -= b.n - COVER.n;
+  b = circleToBbox(c);
+  if (b.w < COVER.w) c.lon += COVER.w - b.w;
+  if (b.e > COVER.e) c.lon -= b.e - COVER.e;
+  circle = c;
+  $("clat").value = c.lat.toFixed(4); $("clon").value = c.lon.toFixed(4); $("crad").value = c.r.toFixed(1);
+  circ.setLatLng([c.lat, c.lon]).setRadius(c.r * 1000);
+  bbox = circleToBbox(c);          // download area: the square around the circle
+  syncHandles();
+  if (fit) map.fitBounds(toBounds(bbox), { padding: [20, 20] });
+  writeHash();
+  updateSize();
+  areaChanged();
+}
+
+// Handles. Box: drag a corner to resize, the centre dot to move.
+// Circle: drag the centre dot to move, the edge square to change the radius.
+const handleIcon = cls => L.divIcon({ className: "", html: `<div class="handle ${cls}"></div>`, iconSize: [12, 12] });
+const corners = { nw: ["n", "w"], ne: ["n", "e"], se: ["s", "e"], sw: ["s", "w"] };
+const handles = {};
+for (const [key, [latK, lonK]] of Object.entries(corners)) {
+  handles[key] = L.marker([0, 0], { icon: handleIcon(""), draggable: true, zIndexOffset: 1000 })
+    .on("drag", e => {
+      const p = e.target.getLatLng();
+      setBbox({ ...bbox, [latK]: p.lat, [lonK]: p.lng });
+    })
+    .on("dragend", () => syncHandles());
+}
+let moveStart = null;
+handles.move = L.marker([0, 0], { icon: handleIcon("move"), draggable: true, zIndexOffset: 1000 })
+  .on("dragstart", e => { moveStart = { p: e.target.getLatLng(), b: { ...bbox } }; })
+  .on("drag", e => {
+    const p = e.target.getLatLng(), b = moveStart.b;
+    let dLat = p.lat - moveStart.p.lat, dLon = p.lng - moveStart.p.lng;
+    // keep the whole box inside coverage while moving
+    dLat = Math.min(COVER.n - b.n, Math.max(COVER.s - b.s, dLat));
+    dLon = Math.min(COVER.e - b.e, Math.max(COVER.w - b.w, dLon));
+    setBbox({ w: b.w + dLon, e: b.e + dLon, s: b.s + dLat, n: b.n + dLat });
+  })
+  .on("dragend", () => syncHandles());
+const cHandles = {
+  move: L.marker([0, 0], { icon: handleIcon("move"), draggable: true, zIndexOffset: 1000 })
+    .on("drag", e => { const p = e.target.getLatLng(); setCircle({ ...circle, lat: p.lat, lon: p.lng }); })
+    .on("dragend", () => syncHandles()),
+  edge: L.marker([0, 0], { icon: handleIcon(""), draggable: true, zIndexOffset: 1000 })
+    .on("drag", e => setCircle({ ...circle, r: map.distance([circle.lat, circle.lon], e.target.getLatLng()) / 1000 }))
+    .on("dragend", () => syncHandles())
+};
+function syncHandles() {
+  if (shape === "box") {
+    for (const [key, [latK, lonK]] of Object.entries(corners)) handles[key].setLatLng([bbox[latK], bbox[lonK]]);
+    handles.move.setLatLng([(bbox.n + bbox.s) / 2, (bbox.w + bbox.e) / 2]);
+  } else if (circle) {
+    cHandles.move.setLatLng([circle.lat, circle.lon]);
+    cHandles.edge.setLatLng([circle.lat, circle.lon + circle.r / kmPerDegLon(circle.lat)]);
+  }
+}
+function setShape(s) {
+  shape = s;
+  $("shapeBox").classList.toggle("active", s === "box");
+  $("shapeCircle").classList.toggle("active", s === "circle");
+  $("shapeBox").setAttribute("aria-pressed", String(s === "box"));
+  $("shapeCircle").setAttribute("aria-pressed", String(s === "circle"));
+  $("boxInputs").hidden = s !== "box";
+  $("circleInputs").hidden = s !== "circle";
+  for (const l of [rect, ...Object.values(handles)]) s === "box" ? l.addTo(map) : l.remove();
+  for (const l of [circ, ...Object.values(cHandles)]) s === "circle" ? l.addTo(map) : l.remove();
+  if (s === "circle") {
+    if (!circle) {   // the largest circle that fits the current box
+      const lat = (bbox.n + bbox.s) / 2;
+      circle = { lat, lon: (bbox.w + bbox.e) / 2,
+                 r: Math.min((bbox.n - bbox.s) * 110.57, (bbox.e - bbox.w) * kmPerDegLon(lat)) / 2 };
+    }
+    setCircle(circle);
+  } else {
+    setBbox(bbox);   // after circle mode this is the circle's square
+    circle = null;
+  }
+}
+$("shapeBox").onclick = () => setShape("box");
+$("shapeCircle").onclick = () => setShape("circle");
+
+// Place search (OpenStreetMap Nominatim, no key), limited to EMODnet coverage
+$("searchForm").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const q = $("q").value.trim();
+  if (!q) return;
+  const box = $("results");
+  box.innerHTML = '<span class="small muted">Searching…</span>';
+  try {
+    const url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&accept-language=en" +
+      `&viewbox=${COVER.w},${COVER.n},${COVER.e},${COVER.s}&bounded=1&q=${encodeURIComponent(q)}`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const hits = await resp.json();
+    box.innerHTML = "";
+    if (!hits.length) {
+      box.innerHTML = '<span class="small muted">No matches inside EMODnet coverage (European seas).</span>';
+      return;
+    }
+    for (const h of hits) {
+      const btn = document.createElement("button");
+      const [name, ...rest] = h.display_name.split(", ");
+      btn.innerHTML = `${name} <small>${rest.slice(-3).join(", ")}</small>`;
+      btn.onclick = () => { goTo(h); box.innerHTML = ""; };
+      box.appendChild(btn);
+    }
+    if (hits.length === 1) { goTo(hits[0]); box.innerHTML = ""; }
+  } catch (err) {
+    box.innerHTML = `<span class="small" style="color:var(--err)">Search failed: ${err.message}</span>`;
+  }
+});
+// Area around a search hit: its own extent, at least ~20 km across, plus a margin
+function goTo(hit) {
+  const [s, n, w, e] = hit.boundingbox.map(Number);
+  const lat = (s + n) / 2, lon = (w + e) / 2;
+  const minLat = 0.18, minLon = 0.18 / Math.cos(lat * Math.PI / 180);   // ≈ 20 km
+  const hLat = Math.max((n - s) * 0.6, minLat / 2), hLon = Math.max((e - w) * 0.6, minLon / 2);
+  const name = hit.display_name.split(", ")[0];
+  if (shape === "circle") {
+    setCircle({ lat, lon, r: Math.max(hLat * 110.57, hLon * kmPerDegLon(lat)) }, { fit: true });
+    status(`Circle placed around ${name}. Drag the edge square to resize, then Render.`);
+  } else {
+    setBbox({ s: lat - hLat, n: lat + hLat, w: lon - hLon, e: lon + hLon }, { fit: true });
+    status(`Box placed around ${name}. Drag the corners to resize, then Render.`);
+  }
+}
+
+for (const k of "nswe") $(k).addEventListener("change", () =>
+  setBbox({ ...bbox, [k]: +$(k).value }, { fit: true }));
+for (const [id, key] of [["clat", "lat"], ["clon", "lon"], ["crad", "r"]])
+  $(id).addEventListener("change", () => setCircle({ ...circle, [key]: +$(id).value }, { fit: true }));
+$("detail").addEventListener("change", updateSize);
+
+// draw a box (drag corner to corner) or a circle (drag from the centre outwards)
+let drawing = false, anchor = null;
+$("draw").onclick = () => {
+  drawing = !drawing;
+  $("draw").classList.toggle("active", drawing);
+  map.getContainer().classList.toggle("drawing", drawing);
+  drawing ? map.dragging.disable() : map.dragging.enable();
+};
+map.on("mousedown", e => {
+  if (!drawing) return;
+  if (!coverBounds.contains(e.latlng)) {
+    status("That's outside EMODnet coverage — start inside the dashed outline (European seas).", true);
+    return;
+  }
+  anchor = e.latlng;
+});
+map.on("mousemove", e => {
+  if (!drawing || !anchor) return;
+  if (shape === "circle") setCircle({ lat: anchor.lat, lon: anchor.lng, r: map.distance(anchor, e.latlng) / 1000 });
+  else setBbox({ w: anchor.lng, e: e.latlng.lng, s: anchor.lat, n: e.latlng.lat });
+});
+map.on("mouseup", () => {
+  if (!drawing || !anchor) return;
+  anchor = null; $("draw").click();   // leave draw mode
+});
+
+function gridFor(b) {
+  const lonDeg = b.e - b.w, latDeg = b.n - b.s;
+  const detail = $("detail").value;
+  let res = NATIVE_RES;
+  if (detail !== "native") res = Math.max(NATIVE_RES, Math.max(lonDeg, latDeg) / +detail);
+  return { res, cols: Math.round(lonDeg / res), rows: Math.round(latDeg / res) };
+}
+function updateSize() {
+  const g = gridFor(bbox);
+  const latMid = (bbox.n + bbox.s) / 2;
+  const kmX = (bbox.e - bbox.w) * kmPerDegLon(latMid);
+  const kmY = (bbox.n - bbox.s) * 110.57;
+  const area = shape === "circle" ? `Circle ${(2 * circle.r).toFixed(0)} km across` : `${kmX.toFixed(0)} × ${kmY.toFixed(0)} km`;
+  $("size").textContent = `${area} · grid ${g.cols} × ${g.rows} · cell ≈ ${(g.res * 110570).toFixed(0)} m`;
+}
+if (hashInit?.circle) { circle = hashInit.circle; setShape("circle"); } else setShape("box");
+map.fitBounds(toBounds(bbox), { padding: [20, 20] });
+
+// ---------------------------------------------------------------- SRTM land (AWS Terrain Tiles, Terrarium PNG)
+// elevation = R*256 + G + B/256 − 32768. Tiles are Web Mercator; we sample them at each grid-cell centre.
+async function sampleTerrain(grid, onProgress) {
+  const { width, height, bbox: b } = grid;
+  const latMid = (b.north + b.south) / 2;
+  const cellM = ((b.east - b.west) / width) * 111320 * Math.cos(latMid * Math.PI / 180);
+  let z = Math.ceil(Math.log2(156543 * Math.cos(latMid * Math.PI / 180) / cellM));
+  z = Math.max(0, Math.min(TERRAIN_MAX_Z, z));
+
+  const lon2x = (lon, z) => (lon + 180) / 360 * 2 ** z * 256;
+  const lat2y = (lat, z) => {
+    const r = lat * Math.PI / 180;
+    return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * 2 ** z * 256;
+  };
+  const tileRange = z => ({
+    x0: Math.floor(lon2x(b.west, z) / 256), x1: Math.floor(lon2x(b.east, z) / 256),
+    y0: Math.floor(lat2y(b.north, z) / 256), y1: Math.floor(lat2y(b.south, z) / 256)
+  });
+  let tr = tileRange(z);
+  while (z > 0 && (tr.x1 - tr.x0 + 1) * (tr.y1 - tr.y0 + 1) > TERRAIN_MAX_TILES) tr = tileRange(--z);
+
+  // download + decode tiles (8 at a time)
+  const tiles = new Map(), jobs = [];
+  for (let ty = tr.y0; ty <= tr.y1; ty++) for (let tx = tr.x0; tx <= tr.x1; tx++) jobs.push([tx, ty]);
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 256;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  let done = 0;
+  async function worker() {
+    while (jobs.length) {
+      const [tx, ty] = jobs.shift();
+      const resp = await fetch(`${TERRAIN_TILES}/${z}/${tx}/${ty}.png`);
+      if (!resp.ok) throw new Error(`terrain tile ${z}/${tx}/${ty}: HTTP ${resp.status}`);
+      const bmp = await createImageBitmap(await resp.blob());
+      ctx.drawImage(bmp, 0, 0);
+      const px = ctx.getImageData(0, 0, 256, 256).data;
+      const elev = new Float32Array(256 * 256);
+      for (let i = 0; i < elev.length; i++)
+        elev[i] = px[i * 4] * 256 + px[i * 4 + 1] + px[i * 4 + 2] / 256 - 32768;
+      tiles.set(`${tx}/${ty}`, elev);
+      onProgress(++done, done + jobs.length);
+    }
+  }
+  const total = jobs.length;
+  onProgress(0, total);
+  await Promise.all(Array.from({ length: 8 }, worker));
+
+  // bilinear sample at each cell centre
+  const pixel = (gx, gy) => {
+    const tx = Math.floor(gx / 256), ty = Math.floor(gy / 256);
+    const t = tiles.get(`${tx}/${ty}`);
+    if (!t) return NaN;
+    return t[(gy - ty * 256) * 256 + (gx - tx * 256)];
+  };
+  const out = new Float32Array(width * height);
+  const dLon = (b.east - b.west) / width, dLat = (b.north - b.south) / height;
+  const xs = Float64Array.from({ length: width }, (_, c) => lon2x(b.west + (c + 0.5) * dLon, z) - 0.5);
+  for (let r = 0; r < height; r++) {
+    const fy = lat2y(b.north - (r + 0.5) * dLat, z) - 0.5;
+    const y0 = Math.floor(fy), wy = fy - y0;
+    for (let c = 0; c < width; c++) {
+      const fx = xs[c], x0 = Math.floor(fx), wx = fx - x0;
+      const a = pixel(x0, y0), bb = pixel(x0 + 1, y0), cc = pixel(x0, y0 + 1), d = pixel(x0 + 1, y0 + 1);
+      let v = (a * (1 - wx) + bb * wx) * (1 - wy) + (cc * (1 - wx) + d * wx) * wy;
+      if (!Number.isFinite(v)) v = [a, bb, cc, d].find(Number.isFinite) ?? NaN;   // tile-edge fallback
+      out[r * width + c] = v;
+    }
+  }
+  return { values: out, z, tiles: total };
+}
+
+// ---------------------------------------------------------------- download + process
+let lastTiff = null, lastGrid = null;
+
+async function download() {
+  const b = bbox, g = gridFor(b), landSrc = $("landsrc").value;
+  if (b.w < COVER.w || b.e > COVER.e || b.s < COVER.s || b.n > COVER.n)
+    return status("Box is outside EMODnet coverage (70.5°W–43°E, 11°N–90°N).", true);
+  if (g.cols < 4 || g.rows < 4) return status("Box is too small — make it larger.", true);
+  if (g.cols * g.rows > MAX_CELLS) return status(`Grid too large (${(g.cols * g.rows).toLocaleString()} cells). Lower the detail or shrink the box.`, true);
+
+  const url = `${WCS}?service=wcs&version=1.0.0&request=getcoverage&coverage=${COVERAGE}` +
+    `&crs=EPSG:4326&BBOX=${b.w},${b.s},${b.e},${b.n}&format=image/tiff&interpolation=nearest` +
+    `&resx=${g.res}&resy=${g.res}`;
+
+  $("go").disabled = true;
+  $("go").textContent = "Rendering…";
+  status(`Downloading ${g.cols} × ${g.rows} bathymetry grid from EMODnet…`);
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const buf = await resp.arrayBuffer();
+    if (!/tiff/i.test(resp.headers.get("content-type") || "")) {
+      throw new Error("Server did not return a GeoTIFF: " + new TextDecoder().decode(buf.slice(0, 300)));
+    }
+    const tiff = await GeoTIFF.fromArrayBuffer(buf);
+    const img = await tiff.getImage();
+    const [raster] = await img.readRasters();
+    const width = img.getWidth(), height = img.getHeight();
+    const [west, south, east, north] = img.getBoundingBox();
+    const grid = { width, height, bbox: { west, south, east, north }, circle: shape === "circle" };
+
+    // Bail out early if EMODnet has (almost) nothing here
+    let seaCells = 0, noData = 0;
+    for (let i = 0; i < raster.length; i++) {
+      const v = raster[i];
+      // EMODnet returns exactly 0 (not NaN) where it has no data
+      if (!Number.isFinite(v) || Math.abs(v) >= 20000 || v === 0) noData++; else if (v < 0) seaCells++;
+    }
+    if (noData / raster.length > 0.95)
+      throw new Error("EMODnet has no data for this box — it only covers European seas. Try a box over European waters.");
+
+    let srtm = null, srtmInfo = "";
+    if (landSrc === "srtm") {
+      srtm = await sampleTerrain(grid, (d, t) => status(`Downloading SRTM land tiles… ${d}/${t}`));
+      srtmInfo = ` · SRTM zoom ${srtm.z} (${srtm.tiles} tiles)`;
+    }
+
+    // Mosaic into signed elevation (m): sea < 0 from EMODnet; land ≥ 0 from the chosen source.
+    // EMODnet: negative = below sea level, positive = land, NaN/huge = no data.
+    status("Processing…");
+    const elev = new Float32Array(width * height);
+    let land = 0, missing = 0, filled = 0;
+    for (let i = 0; i < elev.length; i++) {
+      const v = raster[i];
+      const valid = Number.isFinite(v) && Math.abs(v) < 20000 && v !== 0;   // exact 0 = EMODnet no-data
+      if (valid && v < 0) { elev[i] = v; continue; }            // sea: EMODnet depth
+      if (!valid) missing++; else land++;
+      if (landSrc === "srtm") {
+        const s = srtm.values[i];
+        if (valid) elev[i] = Number.isFinite(s) ? Math.max(0, s) : Math.max(0, v);  // EMODnet says land
+        else if (Number.isFinite(s)) { elev[i] = s; filled++; }                    // gap: use tile value (land or sea)
+        else elev[i] = 0;
+      } else if (landSrc === "emodnet") {
+        elev[i] = valid ? v : 0;
+      } else {
+        elev[i] = 0;
+      }
+    }
+    lastTiff = new Blob([buf], { type: "image/tiff" });
+    lastGrid = { ...grid, elev };
+    $("saveJson").disabled = $("saveTif").disabled = $("saveElev").disabled = false;
+
+    const [minE, maxE] = d3.extent(elev);
+    status(`Loaded ${width} × ${height} cells${srtmInfo}.\n` +
+      `Depth to ${(-Math.min(0, minE)).toFixed(1)} m · land to ${Math.max(0, maxE).toFixed(0)} m · ` +
+      `${(100 * land / elev.length).toFixed(0)}% land` +
+      (missing ? ` · ${(100 * missing / elev.length).toFixed(0)}% no EMODnet data` +
+        (filled ? ` (${filled.toLocaleString()} filled from tiles)` : "") : ""));
+    if (minE >= 0 && maxE <= 0) status("Everything is flat at 0 m in this box.", true);
+    else { viewer.load(lastGrid); setCollapsed(true); return true; }   // main flow done → full-screen view
+  } catch (err) {
+    status("Download failed: " + err.message, true);
+  } finally {
+    $("go").disabled = false;
+    $("go").textContent = "Render";
+  }
+}
+$("go").onclick = () => { stopTour(); download(); };
+
+// ---------------------------------------------------------------- guided sequence ("Render + tour")
+// Render → wait for the contour animation → OSM turbines → wind particles → wind summary →
+// loop through the forecast hours until stopped (Stop button, a new render, or moving the slider).
+let tourId = 0;
+const TOUR_TILT = 62;   // degrees from straight down for the side-on step (90 = fully side-on)
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function waitFor(cond, timeout) {
+  const t0 = performance.now();
+  while (!cond() && performance.now() - t0 < timeout) await sleep(150);
+  return cond();
+}
+function tick(id) {   // switch an option on as if the user had ticked it
+  const el = $(id);
+  if (!el.checked) { el.checked = true; el.dispatchEvent(new Event("change")); }
+}
+function caption(html) { $("toastText").innerHTML = html; $("toast").hidden = !html; }
+// Tour mode: once a tour has been started, changing the area restarts it for the new area
+// (after the changes settle). Render, Stop, or moving the forecast slider leave tour mode.
+// `var` because setBbox/setCircle can call areaChanged() during start-up, before this runs.
+var tourMode = false, areaTimer = null;
+function stopTour() {
+  tourId++; tourMode = false; clearTimeout(areaTimer);
+  caption(""); $("tour").disabled = false;
+}
+function areaChanged() {
+  if (!tourMode) return;
+  tourId++;                                   // stop the sequence that's running
+  caption("Area changed · the tour will restart…");
+  clearTimeout(areaTimer);
+  areaTimer = setTimeout(() => { if (tourMode) startTour(); }, 1500);
+}
+function untick(id) {
+  const el = $(id);
+  if (el.checked) { el.checked = false; el.dispatchEvent(new Event("change")); }
+}
+$("toastStop").onclick = stopTour;
+
+// collapsible legend: just the top row (interval + controls) when folded; camera stays put
+function setLegendFolded(f) {
+  $("hud").classList.toggle("folded", f);
+  const b = $("hudToggle");
+  b.textContent = f ? "▸" : "▾";
+  b.title = f ? "Expand legend" : "Collapse legend";
+  b.setAttribute("aria-label", b.title);
+  b.setAttribute("aria-expanded", String(!f));
+  try { localStorage.setItem("legendFolded", f ? "1" : "0"); } catch (e) {}
+}
+$("hudToggle").onclick = () => setLegendFolded(!$("hud").classList.contains("folded"));
+try { if (localStorage.getItem("legendFolded") === "1") setLegendFolded(true); } catch (e) {}
+$("tour").onclick = () => startTour();
+async function startTour() {
+  const id = ++tourId, alive = () => id === tourId, N = 6;
+  const step = (k, html) => caption(`Step ${k} of ${N} · ${html}`);
+  tourMode = true;
+  clearTimeout(areaTimer);
+  $("tour").disabled = true;
+  // start from a clean slate so the sequence plays out again
+  for (const k of ["onshoreOn", "windOn"]) untick(k);
+  if ($("surf").value !== "off") { $("surf").value = "off"; $("surf").dispatchEvent(new Event("change")); }
+  viewer.resetTilt();
+
+  step(1, "<b>Contours</b>");
+  const ok = await download();
+  if (!alive()) return;
+  if (!ok) return stopTour();
+  await sleep(300);
+  await waitFor(() => !viewer.isPlaying() || !alive(), 30000);   // let the contour animation finish
+  await sleep(1000);
+  if (!alive()) return;
+
+  step(2, "<b>Terraced shaded relief</b>");
+  const surf = $("surf");
+  if (surf.value !== "terraced") { surf.value = "terraced"; surf.dispatchEvent(new Event("change")); }
+  await sleep(2500);
+  if (!alive()) return;
+
+  step(3, "<b>OSM turbines</b>");
+  tick("onshoreOn");
+  await sleep(2500);
+  if (!alive()) return;
+
+  step(4, "<b>Side view</b> · looking into the air column");
+  await viewer.flyTo(TOUR_TILT, { ms: 1800, includeAir: true });
+  await sleep(800);
+  if (!alive()) return;
+
+  step(5, "<b>Wind</b> · Open-Meteo forecast");
+  tick("windOn");
+  await waitFor(() => viewer.windReady() || !alive() || /responding|reached|rate limit|failed/.test($("windMsg").textContent), 22000);
+  if (!alive()) return;
+  if (!viewer.windReady()) {   // forecast unavailable: say so, then end the tour
+    const why = $("windMsg").textContent || "Open-Meteo forecast isn't responding — try again later.";
+    stopTour();
+    caption(`Tour stopped at the wind step · ${why}`);
+    setTimeout(() => { if (!tourMode) caption(""); }, 8000);
+    return;
+  }
+  await sleep(2500);
+  if (!alive()) return;
+
+  // Step 6: loop through the forecast hours
+  $("tour").disabled = false;
+  const slider = $("windHour");
+  while (alive()) {
+    slider.value = (+slider.value + 1) % (+slider.max + 1);
+    slider.dispatchEvent(new Event("input"));
+    step(6, `<b>Forecast</b> ${$("windHourV").textContent}`);
+    await sleep(1000);
+  }
+};
+// moving the forecast slider yourself ends the loop
+$("windHour").addEventListener("input", e => { if (e.isTrusted) stopTour(); });
+$("roseClose").onclick = () => {
+  const el = $("roseOn");
+  el.checked = false;
+  el.dispatchEvent(new Event("change"));
+};
+
+// ---------------------------------------------------------------- layout: collapsible panel + options popover
+function setCollapsed(c) {
+  document.body.classList.toggle("collapsed", c);
+  $("railLabel").textContent = lastGrid ? "Change area" : "Area & render";
+  // after the slide transition: resize the Leaflet map and re-frame the 3D view
+  setTimeout(() => { map.invalidateSize(); viewer.relayout(); }, 270);
+}
+$("collapse").onclick = () => setCollapsed(true);
+$("expand").onclick = $("railLabel").onclick = () => setCollapsed(false);
+
+function setOpts(open) {
+  $("opts").hidden = !open;
+  $("optBtn").setAttribute("aria-expanded", String(open));
+}
+$("optBtn").onclick = e => { e.stopPropagation(); setOpts($("opts").hidden); };
+document.addEventListener("click", e => {
+  if (!$("opts").hidden && !$("opts").contains(e.target) && e.target !== $("optBtn")) setOpts(false);
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") setOpts(false); });
+$("q").addEventListener("keydown", e => e.stopPropagation());   // typing in search shouldn't trigger shortcuts
+
+function saveBlob(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const fname = (tag, ext) => `emodnet_${tag}_${["w", "s", "e", "n"].map(k => bbox[k].toFixed(3)).join("_")}.${ext}`;
+const toRows = f => Array.from({ length: lastGrid.height }, (_, r) =>
+  Array.from(lastGrid.elev.subarray(r * lastGrid.width, (r + 1) * lastGrid.width), v => Math.round(f(v) * 100) / 100));
+$("saveTif").onclick = () => lastTiff && saveBlob(lastTiff, fname("raw", "tif"));
+$("saveJson").onclick = () => lastGrid &&
+  saveBlob(new Blob([JSON.stringify(toRows(v => Math.max(0, -v)))], { type: "application/json" }), fname("depth", "json"));
+$("saveElev").onclick = () => lastGrid &&
+  saveBlob(new Blob([JSON.stringify({ bbox: lastGrid.bbox, width: lastGrid.width, height: lastGrid.height,
+    units: "metres, + land / − sea", rows: toRows(v => v) })], { type: "application/json" }), fname("elevation", "json"));
+
+// ---------------------------------------------------------------- 3D contour viewer
+const viewer = (() => {
+  const host = $("view");
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(devicePixelRatio);
+  host.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x111111);
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
+  camera.up.set(0, 0, 1);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  const group = new THREE.Group();
+  group.renderOrder = 1;
+  scene.add(group);
+
+  // ------------------------------------------------ draped surface (off / terraced / smooth / map)
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.1));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+  sun.position.set(-1, 1, 1.5);   // light from the north-west, the cartographic convention
+  scene.add(sun);
+  const surf = { mode: "off", opacity: 0.95, mesh: null, tex: null, texFor: null, texKey: null, loading: null };
+  // Draped map sources (all CORS-enabled, no API key). Attribution is shown in the HUD when active.
+  const MAP_SOURCES = {
+    emodnet: { url: "https://tiles.emodnet-bathymetry.eu/2020/baselayer/web_mercator/{z}/{x}/{y}.png", maxZ: 12, maxW: 2048,
+               credit: "EMODnet Bathymetry" },
+    // tile.openstreetmap.org refuses pages opened from file:// (no Referer), so use the HOT style server
+    osm:     { url: "https://tile-a.openstreetmap.fr/hot/{z}/{x}/{y}.png", maxZ: 18, maxW: 8192, sharp: true,
+               credit: "© OpenStreetMap contributors · style HOT / OSM France" },
+    otm:     { url: "https://tile.opentopomap.org/{z}/{x}/{y}.png", maxZ: 17, maxW: 8192, sharp: true,
+               credit: "© OpenStreetMap contributors, SRTM · style © OpenTopoMap (CC-BY-SA)" }
+  };
+  const MAX_MAP_TILES = 160;
+  const mapKey = () => surf.mode.startsWith("map:") ? surf.mode.slice(4) : null;
+  const surfMat = new THREE.MeshLambertMaterial({
+    vertexColors: true, transparent: true, opacity: surf.opacity, side: THREE.DoubleSide,
+    depthWrite: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
+  });
+
+  function makeMesh(d) {
+    const { width: W, height: H } = d;
+    const pos = new Float32Array(W * H * 3), col = new Float32Array(W * H * 3), uv = new Float32Array(W * H * 2);
+    for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+      const i = r * W + c;
+      pos[i * 3] = (c + 0.5) * sx - extentX / 2;        // cell centres match the contour coordinates
+      pos[i * 3 + 1] = extentY / 2 - (r + 0.5) * sy;
+      uv[i * 2] = (c + 0.5) / W; uv[i * 2 + 1] = 1 - (r + 0.5) / H;
+    }
+    const idx = new Uint32Array((W - 1) * (H - 1) * 6);
+    let k = 0;
+    for (let r = 0; r < H - 1; r++) for (let c = 0; c < W - 1; c++) {
+      // circle mode: keep only cells fully inside the circle
+      if (!(cellInside(c, r) && cellInside(c + 1, r) && cellInside(c, r + 1) && cellInside(c + 1, r + 1))) continue;
+      const a = r * W + c, b = a + 1, e = a + W, f = e + 1;
+      idx[k++] = a; idx[k++] = e; idx[k++] = b; idx[k++] = b; idx[k++] = e; idx[k++] = f;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+    g.setIndex(new THREE.BufferAttribute(idx.slice(0, k), 1));
+    const m = new THREE.Mesh(g, surfMat);
+    m.renderOrder = 0;
+    return m;
+  }
+
+  function updateSurface(interval) {
+    if (!data || surf.mode === "off") { if (surf.mesh) surf.mesh.visible = false; return; }
+    if (!surf.mesh) { surf.mesh = makeMesh(data); scene.add(surf.mesh); }
+    const g = surf.mesh.geometry, pos = g.attributes.position.array, col = g.attributes.color.array;
+    const terraced = surf.mode === "terraced", landIv = interval * landRatio;
+    const c = new THREE.Color();
+    for (let i = 0; i < data.elev.length; i++) {
+      let e = data.elev[i];
+      // snap to the contour level just above, so each terrace's rim sits on its contour line
+      if (terraced) e = e < 0 ? -Math.floor(-e / interval) * interval : Math.floor(e / landIv) * landIv;
+      pos[i * 3 + 2] = exaggeration * e / zRef;
+      if (!mapKey()) {
+        if (e < 0) c.set(d3.interpolateViridis(1 - Math.min(1, -e / maxDepth)));
+        else c.set(landRamp(maxHeight > 0 ? e / maxHeight : 0));
+        c.toArray(col, i * 3);
+      }
+    }
+    g.attributes.position.needsUpdate = true;
+    g.attributes.color.needsUpdate = true;
+    g.computeVertexNormals();
+    g.computeBoundingSphere();
+    const key = mapKey();
+    const useMap = !!key && surf.tex && surf.texFor === data && surf.texKey === key;
+    if (surfMat.vertexColors === useMap || surfMat.map !== (useMap ? surf.tex : null)) {
+      surfMat.vertexColors = !useMap;
+      surfMat.map = useMap ? surf.tex : null;
+      surfMat.needsUpdate = true;
+    }
+    surf.mesh.visible = !key || useMap;
+    if (key && !useMap) loadImagery(key);
+  }
+
+  // Map tiles (Web Mercator) → equirectangular texture matching the grid
+  async function loadImagery(key) {
+    if (surf.loading === key) return;
+    surf.loading = key;
+    const src = MAP_SOURCES[key], d = data, b = d.bbox;
+    $("surfMsg").textContent = "loading map…";
+    try {
+      // Feature maps: as large a texture as the GPU allows; EMODnet shading: ~grid resolution
+      const gpuMax = renderer.capabilities.maxTextureSize;
+      const targetW = Math.min(gpuMax, src.maxW, src.sharp ? src.maxW : Math.max(1024, d.width * 4));
+      let z = Math.ceil(Math.log2(targetW * 360 / ((b.east - b.west) * 256)));
+      z = Math.max(0, Math.min(src.maxZ, z));
+      const lon2x = lon => (lon + 180) / 360 * 2 ** z * 256;
+      const lat2y = lat => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * 2 ** z * 256; };
+      let X0, X1, Y0, Y1;
+      const range = () => { X0 = lon2x(b.west); X1 = lon2x(b.east); Y0 = lat2y(b.north); Y1 = lat2y(b.south); };
+      range();
+      while (z > 0 && (Math.floor(X1 / 256) - Math.floor(X0 / 256) + 1) * (Math.floor(Y1 / 256) - Math.floor(Y0 / 256) + 1) > MAX_MAP_TILES) { z--; range(); }
+      const merc = document.createElement("canvas");
+      merc.width = Math.ceil(X1 - X0); merc.height = Math.ceil(Y1 - Y0);
+      const mctx = merc.getContext("2d");
+      const jobs = [];
+      for (let ty = Math.floor(Y0 / 256); ty <= Math.floor(Y1 / 256); ty++)
+        for (let tx = Math.floor(X0 / 256); tx <= Math.floor(X1 / 256); tx++)
+          jobs.push(fetch(src.url.replace("{z}", z).replace("{x}", tx).replace("{y}", ty))
+            .then(r => { if (!r.ok) throw new Error(`tile HTTP ${r.status}`); return r.blob(); })
+            .then(createImageBitmap)
+            .then(bmp => mctx.drawImage(bmp, tx * 256 - X0, ty * 256 - Y0)));
+      await Promise.all(jobs);
+      // reproject row by row: output rows are evenly spaced in latitude like the grid
+      const out = document.createElement("canvas");
+      out.width = Math.min(merc.width, gpuMax);
+      out.height = Math.max(2, Math.min(gpuMax, Math.round(out.width * (d.height / d.width))));
+      const octx = out.getContext("2d");
+      for (let j = 0; j < out.height; j++) {
+        const lat = b.north - (j + 0.5) / out.height * (b.north - b.south);
+        octx.drawImage(merc, 0, Math.floor(lat2y(lat) - Y0), merc.width, 1, 0, j, out.width, 1);
+      }
+      if (d !== data) return;   // a newer dataset was loaded meanwhile
+      if (surf.tex) surf.tex.dispose();
+      surf.tex = new THREE.CanvasTexture(out);
+      surf.tex.colorSpace = THREE.SRGBColorSpace;
+      surf.tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      surf.texFor = d; surf.texKey = key;
+      $("surfMsg").textContent = src.credit;
+      updateSurface(currentInterval);
+    } catch (err) {
+      $("surfMsg").textContent = "map failed: " + err.message;
+    } finally {
+      if (surf.loading === key) surf.loading = null;
+    }
+  }
+
+  // ------------------------------------------------ 3D wind turbines (instanced)
+  // Turbine shape in "hub-height units" (hub at z = 1), Z-up, nacelle pointing along +X.
+  // Turbines:
+  //  - start at the water surface (or the ground, on land); offshore ones get a short yellow
+  //    transition piece and a thin grey monopile down to the seabed;
+  //  - size: hub height in metres (default 120 m, set in Options) on the same vertical scale as
+  //    the terrain, so it follows the vertical exaggeration and stands true against hills and
+  //    water depth; the whole turbine scales uniformly from it (rotor ≈ 1.5 × hub height), so it
+  //    always looks in proportion. Large heights may overlap in dense farms.
+  const HUB_HEIGHT_M = 120;        // default hub height
+  const MAX_HUB_M = 400;           // tallest allowed (matches the slider/number box max)
+  const TP_FRAC = 0.12;            // yellow transition piece height, as a fraction of hub height
+  const baseZ = t => exaggeration * Math.max(0, t.elev) / zRef;     // water surface, or ground on land
+  const seabedZ = t => exaggeration * Math.min(0, t.elev) / zRef;
+  const hubZ = () => turb.hubM * exaggeration / zRef;   // hub height on the terrain's vertical scale
+  const turbScale = () => hubZ();                       // uniform: real proportions
+  // vertical scale of the air column (shared with the wind particles)
+  const airK = () => Math.min(exaggeration / zRef, AIR_TOP / (wind.levels ? wind.hMax : 1400));
+  const WIND_FROM = 225;                                  // rotors face SW (prevailing wind), degrees
+  const RPM = 12;
+  const yawAngle = Math.atan2(Math.cos(WIND_FROM * Math.PI / 180), Math.sin(WIND_FROM * Math.PI / 180));
+  const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), yawAngle);
+  const turbGeo = (() => {
+    const tower = new THREE.CylinderGeometry(0.022, 0.038, 1, 12);
+    tower.rotateX(Math.PI / 2); tower.translate(0, 0, 0.5);
+    const nacelle = new THREE.BoxGeometry(0.16, 0.055, 0.055);
+    nacelle.translate(-0.04, 0, 0);   // centred on the hub; placed at tower top per instance
+    const blades = [0, 1, 2].map(k => {
+      const b = new THREE.BoxGeometry(0.006, 0.03, 0.76);
+      b.translate(0, 0, 0.4); b.rotateX(k * 2 * Math.PI / 3);
+      return b;
+    });
+    const hub = new THREE.SphereGeometry(0.032, 12, 8);
+    const rotor = mergeGeometries([...blades.map(b => b.toNonIndexed()), hub.toNonIndexed()]);
+    // yellow transition piece at the waterline (spans z = 0 … 1, scaled to TP_FRAC of hub height)
+    const pile = new THREE.CylinderGeometry(0.045, 0.045, 1, 12);
+    pile.rotateX(Math.PI / 2); pile.translate(0, 0, 0.5);
+    return { tower, nacelle, rotor, pile };
+  })();
+  const turbMat = new THREE.MeshLambertMaterial({ color: 0xf4f4f4 });
+  const pileMat = new THREE.MeshLambertMaterial({ color: 0xe0b43a });
+  const monoMat = new THREE.MeshLambertMaterial({ color: 0x6b6f75 });
+  const turb = { on: false, offOn: false, onOn: false, hubM: HUB_HEIGHT_M, spacing: Infinity, label: "", list: [], group: new THREE.Group(),
+                 tower: null, nacelle: null, rotor: null, pile: null, mono: null, spin: 0 };
+  turb.group.renderOrder = 2;
+  turb.group.visible = false;   // off by default; toggled from the HUD
+  scene.add(turb.group);
+
+  function buildTurbines() {
+    turb.group.clear();
+    for (const k of ["tower", "nacelle", "rotor", "pile", "mono"]) if (turb[k]) { turb[k].dispose(); turb[k] = null; }
+    turb.list = [];
+    if (!data) return;
+    const b = data.bbox;
+    let nOff = 0, nOn = 0;
+    const sources = [...(turb.offOn ? TURBINES : []), ...(turb.onOn ? OSM_TURBINES : [])];
+    for (const t of sources) {
+      if (t.lon < b.west || t.lon > b.east || t.lat < b.south || t.lat > b.north) continue;
+      const fx = (t.lon - b.west) / (b.east - b.west), fy = (b.north - t.lat) / (b.north - b.south);
+      const c = Math.min(data.width - 1, Math.floor(fx * data.width));
+      const r = Math.min(data.height - 1, Math.floor(fy * data.height));
+      if (!insideXY(fx * extentX - extentX / 2, extentY / 2 - fy * extentY)) continue;   // circle mode
+      const elev = data.elev[r * data.width + c];
+      t.osm ? nOn++ : nOff++;
+      turb.list.push({
+        x: fx * extentX - extentX / 2, y: extentY / 2 - fy * extentY,
+        elev, phase: Math.random() * Math.PI * 2
+      });
+    }
+    $("turbN").textContent = (TURBINES.length || OSM_TURBINES.length)
+      ? `(${turb.list.length.toLocaleString()} in area)` : "(data files missing)";
+    if (!turb.list.length) return;
+    const n = turb.list.length;
+
+    // Typical spacing = median nearest-neighbour distance (caps the rotor size)
+    const latMid = (b.north + b.south) / 2;
+    const metresPerUnit = Math.max((b.east - b.west) * 111320 * Math.cos(latMid * Math.PI / 180),
+                                   (b.north - b.south) * 110570);              // model long side = 1 unit
+    const nn = [];
+    const sample = n > 600 ? turb.list.filter((_, i) => i % Math.ceil(n / 600) === 0) : turb.list;
+    for (const a of sample) {
+      let best = Infinity;
+      for (const c of turb.list) {
+        if (c === a) continue;
+        const d = (a.x - c.x) ** 2 + (a.y - c.y) ** 2;
+        if (d > 1e-14 && d < best) best = d;   // ignore exact duplicates
+      }
+      if (best < Infinity) nn.push(Math.sqrt(best));
+    }
+    nn.sort((p, q) => p - q);
+    const spacing = nn.length ? nn[Math.floor(nn.length / 2)] : Infinity;
+    turb.spacing = spacing;
+    const spacingM = spacing * metresPerUnit;
+    turb.label = [nOff && `${nOff.toLocaleString()} DeepOWT`, nOn && `${nOn.toLocaleString()} OSM`]
+      .filter(Boolean).join(" + ") + " in area" +
+      (Number.isFinite(spacingM) ? ` · ~${(spacingM / 1000).toFixed(1)} km apart` : "");
+
+    turb.tower = new THREE.InstancedMesh(turbGeo.tower, turbMat, n);
+    turb.nacelle = new THREE.InstancedMesh(turbGeo.nacelle, turbMat, n);
+    turb.rotor = new THREE.InstancedMesh(turbGeo.rotor, turbMat, n);
+    turb.pile = new THREE.InstancedMesh(turbGeo.pile, pileMat, n);
+    turb.mono = new THREE.InstancedMesh(turbGeo.pile, monoMat, n);
+    turb.rotor.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    turb.group.add(turb.tower, turb.nacelle, turb.rotor, turb.pile, turb.mono);
+    placeTurbines();
+  }
+
+  const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _q = new THREE.Quaternion();
+  const _spin = new THREE.Quaternion(), _xAxis = new THREE.Vector3(1, 0, 0), _off = new THREE.Vector3();
+  function placeTurbines() {   // static parts: tower + nacelle, foundation pile
+    if (!turb.tower) return;
+    const S = turbScale(), Hh = hubZ();   // plan size, hub height above the water
+    $("turbN").textContent = `(${turb.label} · ${turb.hubM} m hub, to terrain scale)`;
+    turb.list.forEach((t, i) => {
+      const z0 = baseZ(t), zb = seabedZ(t);
+      const atSea = t.elev < 0;
+      // offshore: yellow transition piece at the waterline + thin monopile to the seabed;
+      // onshore: plain tower straight from the ground (no yellow piece, no pile)
+      const tp = atSea ? TP_FRAC * Hh : 0;
+      _p.set(t.x, t.y, z0);
+      turb.pile.setMatrixAt(i, _m.compose(_p, qYaw, _s.set(atSea ? S : 0, atSea ? S : 0, Math.max(1e-6, tp))));
+      _p.set(t.x, t.y, z0 + tp);
+      turb.tower.setMatrixAt(i, _m.compose(_p, qYaw, _s.set(S, S, Hh - tp)));                  // tower up to the hub
+      _p.set(t.x, t.y, z0 + Hh);
+      turb.nacelle.setMatrixAt(i, _m.compose(_p, qYaw, _s.set(S, S, S)));
+      _p.set(t.x, t.y, zb);
+      const m = atSea ? 0.5 * S : 0;
+      turb.mono.setMatrixAt(i, _m.compose(_p, qYaw, _s.set(m, m, Math.max(1e-6, z0 - zb))));  // thin line to seabed
+    });
+    for (const k of ["tower", "nacelle", "pile", "mono"]) {
+      turb[k].instanceMatrix.needsUpdate = true;
+      turb[k].computeBoundingSphere();
+    }
+    spinRotors(0);
+    turb.rotor.computeBoundingSphere();
+  }
+  function spinRotors(dt) {
+    if (!turb.rotor || !turb.group.visible) return;
+    turb.spin += dt * RPM / 60 * Math.PI * 2;
+    const S = turbScale(), Hh = hubZ();
+    _off.set(0.06 * S, 0, 0).applyQuaternion(qYaw);        // rotor sits at the front of the nacelle
+    turb.list.forEach((t, i) => {
+      _spin.setFromAxisAngle(_xAxis, turb.spin + t.phase);
+      _q.copy(qYaw).multiply(_spin);
+      _p.set(t.x, t.y, baseZ(t) + Hh).add(_off);
+      turb.rotor.setMatrixAt(i, _m.compose(_p, _q, _s.set(S, S, S)));
+    });
+    turb.rotor.instanceMatrix.needsUpdate = true;
+  }
+
+  // ------------------------------------------------ water surface: faint plane at sea level over the sea only
+  const WATER_COLOR = 0x3b8fc4, WATER_OPACITY = 0.36;
+  const water = { on: true, mesh: null, walls: null, tex: null };
+  function buildWater() {
+    if (water.mesh) { scene.remove(water.mesh); water.mesh.geometry.dispose(); water.mesh.material.dispose(); water.mesh = null; }
+    if (water.tex) { water.tex.dispose(); water.tex = null; }
+    if (!data || maxDepth <= 0) return;
+    const { width: W, height: H, elev } = data;
+    // alpha mask: sea cells opaque, land transparent (texture row 0 = south, grid row 0 = north)
+    const px = new Uint8Array(W * H * 4);
+    for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+      const o = ((H - 1 - r) * W + c) * 4;
+      px[o] = px[o + 1] = px[o + 2] = elev[r * W + c] < 0 ? 255 : 0;
+      px[o + 3] = 255;
+    }
+    water.tex = new THREE.DataTexture(px, W, H, THREE.RGBAFormat);
+    water.tex.magFilter = water.tex.minFilter = THREE.LinearFilter;   // soft coastline edge
+    water.tex.needsUpdate = true;
+    const mat = new THREE.MeshBasicMaterial({
+      color: WATER_COLOR, transparent: true, opacity: WATER_OPACITY, alphaMap: water.tex,
+      depthWrite: false, side: THREE.DoubleSide
+    });
+    let geo;
+    if (Number.isFinite(circleR)) {
+      // circle mode: a disc, with UVs re-mapped onto the full (square) mask texture
+      geo = new THREE.CircleGeometry(circleR, 256);
+      const p = geo.attributes.position, uv = geo.attributes.uv;
+      for (let i = 0; i < p.count; i++)
+        uv.setXY(i, (p.getX(i) + extentX / 2) / extentX, (p.getY(i) + extentY / 2) / extentY);
+    } else geo = new THREE.PlaneGeometry(extentX, extentY);
+    water.mesh = new THREE.Mesh(geo, mat);
+    water.mesh.renderOrder = 0.5;   // before the additive contour lines, so they glow through
+    water.mesh.visible = water.on;
+    scene.add(water.mesh);
+    buildWaterWalls();
+  }
+
+  // Side walls of the water volume: around the edge of the area (box sides or circle rim), from the
+  // seabed up to sea level wherever the edge is sea; lighter at the surface, darker at depth.
+  const WATER_WALL_OPACITY = 0.28;
+  function edgeSamples() {
+    if (Number.isFinite(circleR)) return rimSamples(360);
+    const { width: W, height: H, elev } = data, out = [];
+    const step = Math.max(1, Math.round((2 * (W + H)) / 800));   // ≤ ~800 samples around the box
+    const push = (c, r, x, y) => out.push({ x, y, e: elev[r * W + c] });
+    const X = c => (c + 0.5) * sx - extentX / 2, Y = r => extentY / 2 - (r + 0.5) * sy;
+    for (let c = 0; c < W; c += step) push(c, 0, X(c), extentY / 2);                 // north side
+    for (let r = 0; r < H; r += step) push(W - 1, r, extentX / 2, Y(r));             // east side
+    for (let c = W - 1; c >= 0; c -= step) push(c, H - 1, X(c), -extentY / 2);       // south side
+    for (let r = H - 1; r >= 0; r -= step) push(0, r, -extentX / 2, Y(r));           // west side
+    return out;
+  }
+  function buildWaterWalls() {
+    if (water.walls) { scene.remove(water.walls); water.walls.geometry.dispose(); water.walls.material.dispose(); water.walls = null; }
+    if (!data || maxDepth <= 0) return;
+    const s = edgeSamples(), pos = [], col = [];
+    const top = new THREE.Color(WATER_COLOR), deep = new THREE.Color(WATER_COLOR).multiplyScalar(0.35);
+    for (let i = 0; i < s.length; i++) {
+      const a = s[i], b = s[(i + 1) % s.length];
+      if (!(a.e < 0 && b.e < 0)) continue;                    // only where the edge is under water
+      const za = exaggeration * a.e / zRef, zb = exaggeration * b.e / zRef;
+      // two triangles: (a top, a bottom, b bottom) and (a top, b bottom, b top)
+      pos.push(a.x, a.y, 0, a.x, a.y, za, b.x, b.y, zb, a.x, a.y, 0, b.x, b.y, zb, b.x, b.y, 0);
+      for (const c of [top, deep, deep, top, deep, top]) col.push(c.r, c.g, c.b);
+    }
+    if (!pos.length) return;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    water.walls = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+      vertexColors: true, transparent: true, opacity: WATER_WALL_OPACITY, depthWrite: false, side: THREE.DoubleSide
+    }));
+    water.walls.renderOrder = 0.5;
+    water.walls.visible = water.on;
+    scene.add(water.walls);
+  }
+
+  // ------------------------------------------------ Open-Meteo requests: timeout + per-session cache
+  // A timeout gives a clear message when the service is down or slow instead of hanging; the cache
+  // avoids re-fetching the same area (re-renders, tour restarts), which also keeps request counts low
+  // (Open-Meteo counts each location of a multi-point request against its rate limits).
+  const omCache = new Map();
+  async function fetchJSONCached(url, timeoutMs, label) {
+    if (omCache.has(url)) return omCache.get(url);
+    const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const resp = await fetch(url, { signal: ctrl.signal });
+      if (resp.status === 429) throw new Error(`${label}: rate limit reached — wait a few minutes and try again.`);
+      if (!resp.ok) throw new Error(`${label} failed (HTTP ${resp.status}).`);
+      const json = await resp.json();
+      omCache.set(url, json);
+      return json;
+    } catch (err) {
+      if (err.name === "AbortError") throw new Error(`${label} isn't responding — try again later.`);
+      if (err instanceof TypeError) throw new Error(`${label} couldn't be reached — check the connection or try later.`);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // ------------------------------------------------ wind (Open-Meteo forecast) as 3D particles
+  // A WIND_GRID × WIND_GRID grid of forecast points over the box, at fixed heights (10–180 m)
+  // and pressure levels (geopotential height, up to ~1.5 km). Particles are advected through the
+  // field (bilinear in plan, linear in height). Time is sped up so 10 m/s crosses the box in
+  // CROSS_SECONDS; the air column is squashed into AIR_TOP model units (not to scale).
+  const WIND_GRID = 6, WIND_PARTICLES = 3000, AIR_TOP = 0.3, CROSS_SECONDS = 12, TRAIL_S = 0.6;
+  const SURF_LEVELS = [10, 80, 120, 180];
+  const P_LEVELS = [1000, 975, 950, 925, 900, 850];
+  const wind = { on: false, raw: null, times: null, dataFor: null, loading: false, levels: null,
+                 hMax: 1, maxSpeed: 10, k: 1, parts: null, mesh: null };
+  // Wind colour: faint grey (light) → bright white (strong). Speed = brightness, which reads well with
+  // the additive-blended particles and doesn't compete with the depth/land colour scales.
+  const windRamp = d3.interpolateRgb("#3c3c3c", "#ffffff");
+  const windLUT = d3.range(64).map(i => new THREE.Color(windRamp(i / 63)));
+  const compass = deg => ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+  const fmtTime = t => new Date(t + ":00Z").toLocaleString(undefined,
+    { weekday: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) + " UTC";
+
+  async function loadWind() {
+    if (wind.loading || !data) return;
+    wind.loading = true;
+    const d = data, b = d.bbox, N = WIND_GRID;
+    $("windMsg").textContent = "loading forecast…";
+    try {
+      const lats = [], lons = [];
+      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {   // row 0 = north, like the grid
+        lats.push((b.north - j / (N - 1) * (b.north - b.south)).toFixed(4));
+        lons.push((b.west + i / (N - 1) * (b.east - b.west)).toFixed(4));
+      }
+      const vars = [
+        ...SURF_LEVELS.flatMap(h => [`wind_speed_${h}m`, `wind_direction_${h}m`]),
+        ...P_LEVELS.flatMap(p => [`wind_speed_${p}hPa`, `wind_direction_${p}hPa`, `geopotential_height_${p}hPa`])
+      ];
+      const url = "https://api.open-meteo.com/v1/forecast?latitude=" + lats.join(",") + "&longitude=" + lons.join(",") +
+        "&hourly=" + vars.join(",") + "&wind_speed_unit=ms&forecast_days=2&timezone=GMT";
+      let res = await fetchJSONCached(url, 20000, "Open-Meteo forecast");
+      if (!Array.isArray(res)) res = [res];
+      if (d !== data) return;            // a newer dataset was loaded meanwhile
+      wind.raw = res; wind.dataFor = d; wind.times = res[0].hourly.time;
+      const nowKey = new Date().toISOString().slice(0, 13);
+      let idx = wind.times.findIndex(t => t.slice(0, 13) === nowKey);
+      if (idx < 0) idx = 0;
+      $("windHour").max = wind.times.length - 1;
+      $("windHour").value = idx;
+      $("windMsg").textContent = "";
+      setWindHour(idx);
+    } catch (err) {
+      $("windMsg").textContent = err.message;
+    } finally {
+      wind.loading = false;
+    }
+  }
+
+  function setWindHour(idx) {
+    const res = wind.raw, N = WIND_GRID;
+    if (!res) return;
+    const levels = SURF_LEVELS.map(h => ({ h, sp: `wind_speed_${h}m`, dr: `wind_direction_${h}m` }));
+    for (const p of P_LEVELS) {   // pressure levels: height above ground from geopotential
+      let sum = 0, cnt = 0;
+      for (const r of res) {
+        const g = r.hourly[`geopotential_height_${p}hPa`]?.[idx];
+        if (Number.isFinite(g)) { sum += g - (r.elevation || 0); cnt++; }
+      }
+      if (cnt && sum / cnt > 230) levels.push({ h: sum / cnt, sp: `wind_speed_${p}hPa`, dr: `wind_direction_${p}hPa` });
+    }
+    levels.sort((a, b) => a.h - b.h);
+    let maxS = 0;
+    wind.levels = levels.map(L => {
+      const u = new Float32Array(N * N), v = new Float32Array(N * N);
+      res.forEach((r, k) => {
+        const s = r.hourly[L.sp]?.[idx], dir = r.hourly[L.dr]?.[idx];
+        if (!Number.isFinite(s) || !Number.isFinite(dir)) return;
+        const a = dir * Math.PI / 180;          // meteorological: direction the wind comes FROM
+        u[k] = -s * Math.sin(a); v[k] = -s * Math.cos(a);
+        if (s > maxS) maxS = s;
+      });
+      return { h: L.h, u, v };
+    });
+    wind.hMax = wind.levels[wind.levels.length - 1].h;
+    wind.maxSpeed = Math.max(10, Math.ceil(maxS / 5) * 5);
+
+    // hub-height (120 m) summary; turbines turn to face it
+    const hub = wind.levels.find(L => L.h === 120);
+    const mu = d3.mean(hub.u), mv = d3.mean(hub.v);
+    const sp = Math.hypot(mu, mv), from = (Math.atan2(-mu, -mv) * 180 / Math.PI + 360) % 360;
+    setTurbineWind(from);
+    wind.hubFrom = from; wind.hubSpeed = sp;
+    renderRose();
+    const when = fmtTime(wind.times[idx]);
+    $("windHourV").textContent = when;
+    $("windInfo").textContent = `Wind at 120 m: ${sp.toFixed(1)} m/s from ${compass(from)} (${from.toFixed(0)}°) · ${when}`;
+    $("windMax").textContent = wind.maxSpeed + " m/s";
+    $("windBar").style.background = `linear-gradient(to right, ${d3.range(0, 1.01, 0.1).map(windRamp).join(",")})`;
+    $("windRow").hidden = !wind.on;
+    $("windHourRow").hidden = !wind.on;
+    if (!wind.mesh) initParticles();   // camera stays where it is (no re-fit)
+  }
+
+  function respawn(i, randomAge) {
+    const P = wind.parts, o = i * 5;
+    for (let tries = 0; tries < 20; tries++) {   // in circle mode, spawn inside the circle
+      P[o] = Math.random(); P[o + 1] = Math.random();
+      if (insideXY(P[o] * extentX - extentX / 2, extentY / 2 - P[o + 1] * extentY)) break;
+    }
+    P[o + 2] = 10 + Math.random() * (wind.hMax - 10);       // height above ground, m
+    P[o + 4] = 3 + Math.random() * 5;                        // lifetime, s
+    P[o + 3] = randomAge ? Math.random() * P[o + 4] : 0;     // age
+  }
+  function initParticles() {
+    const n = WIND_PARTICLES;
+    wind.parts = new Float32Array(n * 5);
+    for (let i = 0; i < n; i++) respawn(i, true);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 6), 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(n * 6), 3).setUsage(THREE.DynamicDrawUsage));
+    wind.mesh = new THREE.LineSegments(g, new THREE.LineBasicMaterial({
+      vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false
+    }));
+    wind.mesh.frustumCulled = false;
+    wind.mesh.renderOrder = 3;
+    wind.mesh.visible = wind.on;
+    scene.add(wind.mesh);
+  }
+
+  let _wu = 0, _wv = 0;
+  function sampleWind(fx, fy, h) {
+    const N = WIND_GRID, L = wind.levels;
+    const gx = Math.min(N - 1.0001, Math.max(0, fx * (N - 1))), gy = Math.min(N - 1.0001, Math.max(0, fy * (N - 1)));
+    const i0 = Math.floor(gx), j0 = Math.floor(gy), ax = gx - i0, ay = gy - j0;
+    const k00 = j0 * N + i0, k10 = k00 + 1, k01 = k00 + N, k11 = k01 + 1;
+    const bil = a => (a[k00] * (1 - ax) + a[k10] * ax) * (1 - ay) + (a[k01] * (1 - ax) + a[k11] * ax) * ay;
+    let k = 0;
+    while (k < L.length - 2 && L[k + 1].h < h) k++;
+    const A = L[k], B = L[Math.min(k + 1, L.length - 1)];
+    const t = B.h > A.h ? Math.min(1, Math.max(0, (h - A.h) / (B.h - A.h))) : 0;
+    _wu = bil(A.u) * (1 - t) + bil(B.u) * t;
+    _wv = bil(A.v) * (1 - t) + bil(B.v) * t;
+  }
+
+  function stepWind(dt) {
+    if (!wind.on || !wind.mesh || !wind.levels || !data || wind.dataFor !== data) return;
+    const b = data.bbox, W = data.width, H = data.height;
+    const latMid = (b.north + b.south) / 2;
+    const spanX = (b.east - b.west) * 111320 * Math.cos(latMid * Math.PI / 180), spanY = (b.north - b.south) * 110570;
+    const ts = Math.max(spanX, spanY) / (10 * CROSS_SECONDS);   // real seconds per animation second
+    wind.k = airK();
+    const P = wind.parts, pos = wind.mesh.geometry.attributes.position.array, col = wind.mesh.geometry.attributes.color.array;
+    for (let i = 0; i < WIND_PARTICLES; i++) {
+      const o = i * 5;
+      P[o + 3] += dt;
+      if (P[o + 3] > P[o + 4]) respawn(i, false);
+      let fx = P[o], fy = P[o + 1];
+      const h = P[o + 2];
+      sampleWind(fx, fy, h);
+      const dfx = _wu * ts / spanX, dfy = -_wv * ts / spanY;   // grid fractions per animation second
+      fx += dfx * dt; fy += dfy * dt;
+      const p6 = i * 6;
+      if (fx < 0 || fx > 1 || fy < 0 || fy > 1 ||
+          !insideXY(fx * extentX - extentX / 2, extentY / 2 - fy * extentY)) {
+        respawn(i, false);
+        for (let q = 0; q < 6; q++) col[p6 + q] = 0;
+        continue;
+      }
+      P[o] = fx; P[o + 1] = fy;
+      const c = Math.min(W - 1, Math.floor(fx * W)), r = Math.min(H - 1, Math.floor(fy * H));
+      const zs = exaggeration * Math.max(0, data.elev[r * W + c]) / zRef;   // ground (land) or sea level
+      const x = fx * extentX - extentX / 2, y = extentY / 2 - fy * extentY, z = zs + h * wind.k;
+      pos[p6] = x; pos[p6 + 1] = y; pos[p6 + 2] = z;                                    // head
+      pos[p6 + 3] = x - dfx * TRAIL_S * extentX; pos[p6 + 4] = y + dfy * TRAIL_S * extentY; pos[p6 + 5] = z;  // tail
+      const age = P[o + 3], life = P[o + 4];
+      const fade = Math.max(0, Math.min(1, age / 0.6, (life - age) / 0.6));
+      const cc = windLUT[Math.min(63, Math.round(Math.hypot(_wu, _wv) / wind.maxSpeed * 63))];
+      col[p6] = cc.r * fade; col[p6 + 1] = cc.g * fade; col[p6 + 2] = cc.b * fade;
+      col[p6 + 3] = col[p6 + 4] = col[p6 + 5] = 0;                                        // tail fades out
+    }
+    wind.mesh.geometry.attributes.position.needsUpdate = true;
+    wind.mesh.geometry.attributes.color.needsUpdate = true;
+  }
+
+  function resetWind() {
+    if (wind.mesh) { scene.remove(wind.mesh); wind.mesh.geometry.dispose(); wind.mesh.material.dispose(); wind.mesh = null; }
+    wind.raw = wind.times = wind.levels = wind.parts = wind.dataFor = null;
+    $("windRow").hidden = $("windHourRow").hidden = true;
+    if (wind.on) loadWind();
+  }
+
+  // Turbines face the wind (rotor upwind): yaw so the nacelle's +X points to where the wind comes from
+  function setTurbineWind(fromDeg) {
+    const a = fromDeg * Math.PI / 180;
+    qYaw.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.atan2(Math.cos(a), Math.sin(a)));
+    placeTurbines();
+  }
+
+  // ------------------------------------------------ prevailing wind: wind rose for the area centre
+  // A year of hourly ERA5 reanalysis at 100 m from the Open-Meteo archive (free, no key), binned into
+  // 16 directions. Petal length = share of hours the wind comes FROM that direction; colour = mean speed.
+  const SECTORS = 16, SECTOR_NAMES = "N NNE NE ENE E ESE SE SSE S SSW SW WSW W WNW NW NNW".split(" ");
+  const climate = { on: true, stats: null, dataFor: null, loading: false };
+
+  async function loadClimate() {
+    if (climate.loading || !data) return;
+    climate.loading = true;
+    const d = data, b = d.bbox;
+    const lat = (b.north + b.south) / 2, lon = (b.west + b.east) / 2;
+    const year = new Date().getUTCFullYear() - 1;   // last full calendar year
+    $("roseSub").textContent = "Loading a year of wind data…";
+    $("roseDir").textContent = "–";
+    try {
+      const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}` +
+        `&start_date=${year}-01-01&end_date=${year}-12-31&hourly=wind_speed_100m,wind_direction_100m` +
+        `&wind_speed_unit=ms&timezone=GMT`;
+      const h = (await fetchJSONCached(url, 30000, "Open-Meteo archive")).hourly;
+      if (d !== data) return;
+      const count = new Array(SECTORS).fill(0), sum = new Array(SECTORS).fill(0);
+      let n = 0, total = 0;
+      h.wind_speed_100m.forEach((s, i) => {
+        const dir = h.wind_direction_100m[i];
+        if (s == null || dir == null) return;
+        const k = Math.floor(((dir + 180 / SECTORS) % 360) / (360 / SECTORS));
+        count[k]++; sum[k] += s; n++; total += s;
+      });
+      if (!n) throw new Error("no data");
+      const top = count.indexOf(Math.max(...count));
+      climate.stats = { year, n, mean: total / n, count, meanBy: sum.map((s, k) => count[k] ? s / count[k] : 0), top };
+      climate.dataFor = d;
+      renderRose();
+    } catch (err) {
+      $("roseSub").textContent = err.message;
+    } finally {
+      climate.loading = false;
+    }
+  }
+
+  function renderRose() {
+    const st = climate.stats, svg = $("rose");
+    if (!st) return;
+    const R = 84, maxShare = Math.max(...st.count) / st.n, half = 360 / SECTORS / 2 * 0.85;
+    const pt = (deg, r) => [r * Math.sin(deg * Math.PI / 180), -r * Math.cos(deg * Math.PI / 180)];
+    let out = "";
+    for (const f of [0.5, 1]) out += `<circle r="${(R * f).toFixed(1)}" fill="none" stroke="#3a3a3a" stroke-width="1"/>`;
+    st.count.forEach((c, k) => {
+      if (!c) return;
+      const r = R * (c / st.n) / maxShare, mid = k * 360 / SECTORS;
+      const [x0, y0] = pt(mid - half, r), [x1, y1] = pt(mid + half, r);
+      const col = windRamp(Math.min(1, st.meanBy[k] / 20));
+      out += `<path d="M0,0L${x0.toFixed(1)},${y0.toFixed(1)}A${r.toFixed(1)},${r.toFixed(1)} 0 0 1 ${x1.toFixed(1)},${y1.toFixed(1)}Z"` +
+             ` fill="${col}" fill-opacity="${k === st.top ? 0.95 : 0.7}" stroke="#111" stroke-width="0.5">` +
+             `<title>${SECTOR_NAMES[k]}: ${(100 * c / st.n).toFixed(1)}% of hours, mean ${st.meanBy[k].toFixed(1)} m/s</title></path>`;
+    });
+    out += `<text x="0" y="-80" text-anchor="middle" dominant-baseline="auto">N</text>`;
+    // current forecast at hub height (when the Wind layer's forecast is loaded): green arrow showing
+    // the flow; its speed/direction/time are in the wind row just above in the same legend
+    if (wind.levels && wind.hubFrom != null) {
+      const [ax, ay] = pt(wind.hubFrom, R * 0.95), [bx, by] = pt(wind.hubFrom + 180, R * 0.95);
+      out += `<defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">` +
+             `<path d="M0,0L10,5L0,10z" fill="#4fc3a1"/></marker></defs>` +
+             `<line x1="${ax.toFixed(1)}" y1="${ay.toFixed(1)}" x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}" stroke="#4fc3a1" stroke-width="3" marker-end="url(#ah)"/>`;
+    }
+    svg.innerHTML = out;
+    const name = SECTOR_NAMES[st.top], share = (100 * st.count[st.top] / st.n).toFixed(0);
+    svg.setAttribute("aria-label", `Wind rose: prevailing wind from ${name}, ${share}% of hours, mean ${st.mean.toFixed(1)} metres per second`);
+    $("roseDir").textContent = name;
+    $("roseSub").textContent = `${share}% of hours · mean ${st.mean.toFixed(1)} m/s at 100 m · ${st.year} (ERA5)`;
+    $("roseBar").style.background = `linear-gradient(to right, ${d3.range(0, 1.01, 0.1).map(windRamp).join(",")})`;
+  }
+
+  function resetClimate() {
+    climate.stats = null; climate.dataFor = null;
+    $("rose").innerHTML = "";
+    $("roseSec").hidden = !climate.on;
+    if (climate.on) loadClimate();
+  }
+
+  function resetSurface() {
+    if (surf.mesh) { scene.remove(surf.mesh); surf.mesh.geometry.dispose(); surf.mesh = null; }
+    if (surf.tex) { surf.tex.dispose(); surf.tex = null; surf.texFor = null; surf.texKey = null; }
+  }
+
+  // The canvas is full-screen; frame the model in the part not covered by the left panel/rail
+  // (padLeft), the options button (padTop) and the legend card (padBottom).
+  let padTop = 0, padBottom = 0, padLeft = 0, padRight = 0;
+  const VIEW_LIFT = 0.06;   // extra space kept free at the bottom (fraction of view height): draws the model higher
+  function applyViewport() {
+    const w = host.clientWidth, h = host.clientHeight;
+    renderer.setSize(w, h);
+    const narrow = w <= 700;
+    const sideOpen = !document.body.classList.contains("collapsed");
+    padLeft = narrow ? 0 : (sideOpen ? $("side").offsetWidth : $("rail").offsetWidth);
+    padTop = 48;
+    const hud = $("hud");
+    const bottomH = hud.hidden ? 0 : hud.offsetHeight;
+    padBottom = (bottomH ? Math.min(h * 0.45, bottomH + 24) : h * 0.05) + h * VIEW_LIFT;
+    camera.aspect = w / h;
+    padRight = 0;
+    camera.setViewOffset(w, h, -(padLeft - padRight) / 2, -(padTop - padBottom) / 2, w, h);
+    camera.updateProjectionMatrix();
+  }
+  function relayout() { applyViewport(); if (data) setView(currentTilt); }
+  new ResizeObserver(applyViewport).observe(host);
+
+  let data = null, maxDepth = 0, maxHeight = 0, zRef = 1, landRatio = 1, relief = 100, schedule = [1];
+  let circleR = Infinity;   // model-space radius in circle mode (centred on the origin)
+  let sx = 1, sy = 1, extentX = 1, extentY = 1;
+  let exaggeration = 0.2, currentInterval = 1, currentTilt = 35;
+
+  // Nice step: 1, 2, 2.5, 5 × 10^k
+  function niceStep(x) {
+    const p = 10 ** Math.floor(Math.log10(x)), m = x / p;
+    return p * (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10);
+  }
+  // Intervals from relief/2 (≈2 levels) down to relief/maxLevels, in tidy steps
+  function makeSchedule(relief, maxLevels) {
+    const start = relief / 2, end = relief / maxLevels;
+    const step = niceStep(Math.max((start - end) / (FRAMES - 1), 1e-3));
+    const out = [];
+    for (let v = Math.max(step, Math.floor(start / step) * step); v >= end - 1e-9; v -= step)
+      out.push(+v.toPrecision(6));
+    return out.length ? out : [niceStep(end)];
+  }
+  const fmt = v => v >= 10 ? v.toFixed(0) : String(+v.toFixed(2));
+  // ---- circle clipping helpers (model coordinates; circle centred on the origin)
+  function cellInside(c, r) {
+    if (!Number.isFinite(circleR)) return true;
+    const x = (c + 0.5) * sx - extentX / 2, y = extentY / 2 - (r + 0.5) * sy;
+    return x * x + y * y <= circleR * circleR;
+  }
+  const insideXY = (x, y) => x * x + y * y <= circleR * circleR;
+  // point where segment a→b crosses the circle
+  function crossCircle(a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const A = dx * dx + dy * dy, B = 2 * (a[0] * dx + a[1] * dy), C = a[0] * a[0] + a[1] * a[1] - circleR * circleR;
+    const disc = Math.sqrt(Math.max(0, B * B - 4 * A * C));
+    let t = (-B + disc) / (2 * A);
+    if (t < 0 || t > 1) t = (-B - disc) / (2 * A);
+    t = Math.min(1, Math.max(0, t));
+    return [a[0] + t * dx, a[1] + t * dy];
+  }
+  // split a contour ring (grid coords) into model-space runs inside the circle
+  function clipToCircle(ring) {
+    const runs = [];
+    let run = [], prev = null, prevIn = false;
+    for (const p of ring) {
+      const q = [p[0] * sx - extentX / 2, extentY / 2 - p[1] * sy];
+      const inside = insideXY(q[0], q[1]);
+      if (prev && inside !== prevIn) {
+        run.push(crossCircle(prev, q));
+        if (!inside) { runs.push(run); run = []; }
+      }
+      if (inside) run.push(q);
+      prev = q; prevIn = inside;
+    }
+    if (run.length) runs.push(run);
+    // a closed ring that started inside: join the last run onto the first
+    if (runs.length > 1 && prevIn && insideXY(...[ring[0][0] * sx - extentX / 2, extentY / 2 - ring[0][1] * sy]))
+      runs[0] = runs.pop().concat(runs[0]);
+    return runs;
+  }
+  // elevation sampled (bilinear) around the rim
+  function rimSamples(n = 360) {
+    const { width: W, height: H, elev } = data, out = [];
+    for (let i = 0; i < n; i++) {
+      const a = i / n * Math.PI * 2, x = circleR * Math.cos(a), y = circleR * Math.sin(a);
+      const fc = Math.min(W - 1.001, Math.max(0, (x + extentX / 2) / sx - 0.5));
+      const fr = Math.min(H - 1.001, Math.max(0, (extentY / 2 - y) / sy - 0.5));
+      const c0 = Math.floor(fc), r0 = Math.floor(fr), wc = fc - c0, wr = fr - r0;
+      const e = (elev[r0 * W + c0] * (1 - wc) + elev[r0 * W + c0 + 1] * wc) * (1 - wr) +
+                (elev[(r0 + 1) * W + c0] * (1 - wc) + elev[(r0 + 1) * W + c0 + 1] * wc) * wr;
+      out.push({ x, y, e });
+    }
+    return out;
+  }
+
+  // shoelace area of a contour ring, in grid cells
+  function ringArea(r) {
+    let a = 0;
+    for (let i = 1; i < r.length; i++) a += r[i - 1][0] * r[i][1] - r[i][0] * r[i - 1][1];
+    return Math.abs(a / 2);
+  }
+  const seaColor = d => new THREE.Color(d3.interpolateViridis(1 - d / maxDepth));
+  const landRamp = d3.interpolateRgbBasis(["#4a7c3a", "#a8a24e", "#b07a4f", "#8a6a5a", "#f2efe9"]);
+  const landColor = h => new THREE.Color(landRamp(h / maxHeight));
+
+  function load(d) {
+    data = d;
+    // True ground aspect: shrink longitude by cos(latitude), north up
+    {
+      const latMid = (d.bbox.north + d.bbox.south) / 2;
+      const kx = (d.bbox.east - d.bbox.west) * Math.cos(latMid * Math.PI / 180);
+      const ky = d.bbox.north - d.bbox.south;
+      const k = Math.max(kx, ky);
+      extentX = kx / k; extentY = ky / k;
+      sx = extentX / d.width; sy = extentY / d.height;
+    }
+    // Circle mode: clip to the circle inscribed in the (square) download area
+    circleR = d.circle ? 0.5 * Math.min(extentX, extentY) : Infinity;
+    let minE = Infinity, maxE = -Infinity;   // relief measured inside the area only
+    for (let r = 0; r < d.height; r++) for (let c = 0; c < d.width; c++) {
+      if (!cellInside(c, r)) continue;
+      const e = d.elev[r * d.width + c];
+      if (e < minE) minE = e;
+      if (e > maxE) maxE = e;
+    }
+    if (!Number.isFinite(minE)) [minE, maxE] = d3.extent(d.elev);
+    maxDepth = Math.max(0, -minE); maxHeight = Math.max(0, maxE);
+    // One vertical scale for land and sea (true proportions), normalised to the larger relief
+    zRef = Math.max(maxDepth, maxHeight, 1);
+    // Land contour spacing scales with relief so mountains get ~as many lines as the seabed
+    landRatio = maxDepth > 0 ? Math.max(1, Math.ceil(maxHeight / maxDepth)) : Math.max(1, Math.ceil(maxHeight / 100));
+    // Sea relief drives the schedule (land intervals are landRatio × sea interval)
+    relief = maxDepth > 0 ? maxDepth : maxHeight / landRatio;
+    schedule = makeSchedule(relief, +$("levels").value);
+    resetSurface();
+
+    $("maxd").textContent = maxDepth.toFixed(0) + " m deep";
+    $("maxh").textContent = maxHeight.toFixed(0) + " m high";
+    $("landRow").hidden = maxHeight <= 0;
+    $("seaBar").style.background =
+      `linear-gradient(to right, ${d3.range(0, 1.01, 0.1).map(t => d3.interpolateViridis(1 - t)).join(",")})`;
+    $("landBar").style.background =
+      `linear-gradient(to right, ${d3.range(0, 1.01, 0.1).map(landRamp).join(",")})`;
+    $("hud").hidden = false; $("empty").hidden = true; $("optBtn").hidden = false;
+    $("roseSec").hidden = !climate.on;   // before framing, so the model leaves room for it
+    applyViewport();
+    setView(currentTilt);
+    buildTurbines();
+    buildWater();
+    resetWind();
+    resetClimate();
+    restart();
+  }
+
+  function build(interval) {
+    currentInterval = interval;
+    for (const c of group.children) { c.geometry.dispose(); c.material.dispose(); }
+    group.clear();
+    if (!data) return;
+    const { width, height, elev } = data;
+    const landInterval = interval * landRatio;
+    // sea: −interval, −2·interval, …; coastline at 0; land: +landInterval, …
+    const thresholds = [
+      ...d3.range(interval, maxDepth, interval).map(t => -t).reverse(),
+      0,
+      ...d3.range(landInterval, maxHeight, landInterval)
+    ];
+    const contours = d3.contours().size([width, height]).thresholds(thresholds)(elev);
+
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const c of contours) for (const poly of c.coordinates) for (const ring of poly)
+      for (const [x, y] of ring) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    const eps = 1e-6;
+    const onEdge = ([x, y]) => x - x0 < eps || x1 - x < eps || y - y0 < eps || y1 - y < eps;
+
+    const mat = new THREE.LineBasicMaterial({ vertexColors: true, blending: THREE.AdditiveBlending, transparent: true });
+    let n = 0;
+    const isCircle = Number.isFinite(circleR);
+    const rimPts = [], rimCols = [];   // circle mode: the dim "wall" drawn along the rim
+    const addLine = (xy, z, color) => {
+      const pts = new Float32Array(xy.length * 3), cols = new Float32Array(xy.length * 3);
+      xy.forEach(([x, y], i) => { pts[i * 3] = x; pts[i * 3 + 1] = y; pts[i * 3 + 2] = z; color.toArray(cols, i * 3); });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(pts, 3));
+      g.setAttribute("color", new THREE.BufferAttribute(cols, 3));
+      group.add(new THREE.Line(g, mat));
+      n++;
+    };
+    const rim = isCircle ? rimSamples() : null;
+    for (const c of contours) {
+      const z = exaggeration * c.value / zRef;
+      const base = c.value === 0 ? new THREE.Color(0xffffff)
+                 : c.value < 0 ? seaColor(-c.value) : landColor(c.value);
+      const dim = base.clone().multiplyScalar(WALL_BRIGHTNESS);
+      if (isCircle) {
+        // contour lines clipped exactly at the circle
+        for (const poly of c.coordinates) for (const ring of poly) {
+          if (ringArea(ring) < MIN_RING_CELLS) continue;
+          for (const run of clipToCircle(ring)) if (run.length >= 2) addLine(run, z, base);
+        }
+        // wall: rim arcs where the area at this level reaches the rim (elevation there ≥ level)
+        for (let i = 0; i < rim.length; i++) {
+          const a = rim[i], b = rim[(i + 1) % rim.length];
+          if (a.e >= c.value && b.e >= c.value) {
+            rimPts.push(a.x, a.y, z, b.x, b.y, z);
+            rimCols.push(dim.r, dim.g, dim.b, dim.r, dim.g, dim.b);
+          }
+        }
+        continue;
+      }
+      for (const poly of c.coordinates) for (const ring of poly) {
+        if (ringArea(ring) < MIN_RING_CELLS) continue;   // skip tiny specks
+        const pts = new Float32Array(ring.length * 3);
+        const cols = new Float32Array(ring.length * 3);
+        ring.forEach((p, i) => {
+          pts[i * 3]     = p[0] * sx - extentX / 2;      // column → east
+          pts[i * 3 + 1] = extentY / 2 - p[1] * sy;      // row 0 is north
+          pts[i * 3 + 2] = z;
+          (onEdge(p) ? dim : base).toArray(cols, i * 3);
+        });
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.BufferAttribute(pts, 3));
+        g.setAttribute("color", new THREE.BufferAttribute(cols, 3));
+        group.add(new THREE.Line(g, mat));
+        n++;
+      }
+    }
+    if (rimPts.length) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(rimPts, 3));
+      g.setAttribute("color", new THREE.Float32BufferAttribute(rimCols, 3));
+      group.add(new THREE.LineSegments(g, mat));
+    }
+    updateSurface(interval);
+    $("ival").textContent = fmt(interval);
+    $("lival").textContent = fmt(landInterval);
+    $("nlines").textContent = n.toLocaleString();
+  }
+
+  // tilt: degrees from straight down (0 = top, 90 = side), viewed from the south
+  function setView(tilt, opts) {
+    const v = computeView(tilt, opts);
+    controls.target.copy(v.target);
+    camera.position.copy(v.position);
+    controls.update();
+  }
+  // Glide the camera to a new tilt over `ms` (ease in/out). includeAir also frames the wind column.
+  let flight = 0;
+  function flyTo(tilt, { ms = 1500, includeAir = false } = {}) {
+    const id = ++flight, v = computeView(tilt, { includeAir });
+    const p0 = camera.position.clone(), t0 = controls.target.clone(), start = performance.now();
+    return new Promise(resolve => {
+      const step = now => {
+        if (id !== flight) return resolve();
+        const k = Math.min(1, (now - start) / ms), e = k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
+        camera.position.lerpVectors(p0, v.position, e);
+        controls.target.lerpVectors(t0, v.target, e);
+        controls.update();
+        k < 1 ? requestAnimationFrame(step) : resolve();
+      };
+      requestAnimationFrame(step);
+    });
+  }
+  function computeView(tilt, { includeAir = false } = {}) {
+    currentTilt = tilt;
+    let zTop = exaggeration * maxHeight / zRef;
+    const zBot = -exaggeration * maxDepth / zRef;
+    if (includeAir || (wind.on && wind.levels)) zTop = Math.max(zTop, airK() * (wind.levels ? wind.hMax : 1400));
+    const depth = zTop - zBot, zMid = (zTop + zBot) / 2;
+    // fit into the uncovered area of the screen
+    const h = host.clientHeight || 1, w = host.clientWidth || 1;
+    const freeV = Math.max(0.3, (h - padTop - padBottom) / h), freeH = Math.max(0.3, (w - padLeft - padRight) / w);
+    const fullV = THREE.MathUtils.degToRad(camera.fov);
+    const vFov = 2 * Math.atan(Math.tan(fullV / 2) * freeV);
+    const hFov = 2 * Math.atan(Math.tan(fullV / 2) * camera.aspect * freeH);
+    const t = THREE.MathUtils.degToRad(tilt);
+    const vExtent = extentY * Math.cos(t) + depth * Math.sin(t);
+    const dist = 1.15 * Math.max((vExtent / 2) / Math.tan(vFov / 2), (extentX / 2) / Math.tan(hFov / 2));
+    return {
+      target: new THREE.Vector3(0, 0, zMid),
+      position: new THREE.Vector3(0, -dist * Math.sin(t), zMid + dist * Math.cos(t) + 1e-4)
+    };
+  }
+
+  // animation: step through the schedule (coarse → fine), one interval every TICK_MS
+  let frame = 0, playing = false, last = 0;
+  function setPlaying(p) {
+    playing = p;
+    const b = $("play");
+    b.textContent = p ? "❚❚" : "▶";
+    b.title = p ? "Pause contour animation" : "Play contour animation";
+    b.setAttribute("aria-label", b.title);
+  }
+  function restart() { frame = 0; build(schedule[frame++]); last = performance.now(); setPlaying(true); }
+  let prevT = 0;
+  function loop(t) {
+    requestAnimationFrame(loop);
+    if (playing && t - last >= TICK_MS) {
+      last = t;
+      if (frame < schedule.length) build(schedule[frame++]);
+      if (frame >= schedule.length) setPlaying(false);
+    }
+    const dt = Math.min(0.1, (t - prevT) / 1000);
+    spinRotors(dt);
+    stepWind(dt);
+    prevT = t;
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(loop);
+
+  $("play").onclick = () => { if (!playing && frame >= schedule.length) frame = 0; setPlaying(!playing); };
+  $("restart").onclick = restart;
+  $("surf").onchange = () => {
+    surf.mode = $("surf").value;
+    $("surfOpRow").hidden = surf.mode === "off";
+    const key = mapKey();
+    $("surfMsg").textContent = key && surf.texKey === key ? MAP_SOURCES[key].credit : "";
+    updateSurface(currentInterval);
+  };
+  $("surfOpV").textContent = surf.opacity;
+  $("surfOp").oninput = () => {
+    surf.opacity = +$("surfOp").value;
+    $("surfOpV").textContent = surf.opacity;
+    surfMat.opacity = surf.opacity;
+    surfMat.depthWrite = surf.opacity > 0.95;   // see-through surfaces shouldn't hide lines behind them
+  };
+  surfMat.depthWrite = false;
+  $("levels").onchange =() => { if (data) { schedule = makeSchedule(relief, +$("levels").value); restart(); } };
+  const ex = $("ex"), exv = $("exv");
+  exv.textContent = "×" + ex.value;
+  ex.oninput = () => {
+    exaggeration = +ex.value; exv.textContent = "×" + ex.value;
+    build(currentInterval); placeTurbines(); buildWaterWalls();   // walls follow the seabed depth
+  };
+  $("turbOn").onchange = $("onshoreOn").onchange = () => {
+    turb.offOn = $("turbOn").checked;
+    turb.onOn = $("onshoreOn").checked;
+    turb.on = turb.offOn || turb.onOn;
+    turb.group.visible = turb.on;
+    $("turbSizeRow").hidden = !turb.on;
+    if (!turb.on) $("turbN").textContent = "";
+    buildTurbines();
+  };
+  $("waterOn").onchange = () => {
+    water.on = $("waterOn").checked;
+    if (water.mesh) water.mesh.visible = water.on;
+    if (water.walls) water.walls.visible = water.on;
+  };
+  $("windOn").onchange = () => {
+    wind.on = $("windOn").checked;
+    if (wind.mesh) wind.mesh.visible = wind.on;
+    $("windRow").hidden = $("windHourRow").hidden = !(wind.on && wind.levels);
+    if (wind.on && data && wind.dataFor !== data) loadWind();
+    if (!wind.on) $("windMsg").textContent = "";
+  };
+  $("windHour").oninput = () => setWindHour(+$("windHour").value);
+  $("roseOn").onchange = () => {
+    climate.on = $("roseOn").checked;
+    $("roseSec").hidden = !climate.on;
+    if (climate.on && data && climate.dataFor !== data) loadClimate();
+    // camera stays locked: no re-fit when the legend grows
+  };
+  // hub height in metres: slider and number box stay in sync
+  const setHub = v => {
+    if (!Number.isFinite(v) || v <= 0) return;
+    turb.hubM = Math.round(Math.min(MAX_HUB_M, Math.max(10, v)));
+    $("turbSize").value = turb.hubM;
+    $("turbHubN").value = turb.hubM;
+    placeTurbines();
+  };
+  $("turbSize").oninput = () => setHub(+$("turbSize").value);
+  $("turbHubN").onchange = () => setHub(+$("turbHubN").value);
+  document.querySelectorAll("[data-tilt]").forEach(b => b.onclick = () => setView(+b.dataset.tilt));
+
+  return { load, relayout, flyTo, resetTilt: () => { currentTilt = 35; }, isPlaying: () => playing, windReady: () => !!(wind.levels && wind.dataFor === data) };
+})();
+</script>
+</body>
+</html>
