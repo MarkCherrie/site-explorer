@@ -13,6 +13,8 @@
 // Then tick "Live ships" in the explorer (Options → Sea traffic). The relay listens on
 // http://localhost:8787 by default (set PORT to change it).
 //
+// Hosted (Cloud Run): set HOST=0.0.0.0; PORT is provided; the key comes from a secret as AISSTREAM_API_KEY.
+//
 // Only the explorer is allowed to read from the relay: pages opened from a file, from localhost, or
 // from the origins in ALLOWED_ORIGINS (comma-separated; defaults to the published explorer).
 
@@ -24,6 +26,8 @@ import fs from "node:fs";
 const KEY = (process.env.AISSTREAM_API_KEY ||
   (process.env.AISSTREAM_API_KEY_FILE ? fs.readFileSync(process.env.AISSTREAM_API_KEY_FILE, "utf8").split(/\r?\n/)[0] : "")).trim();
 const PORT = +(process.env.PORT || 8787);
+const HOST = process.env.HOST || "127.0.0.1";          // 0.0.0.0 when hosted (e.g. Cloud Run)
+const MAX_CLIENTS = +(process.env.MAX_CLIENTS || 100);   // open pages at once; more are turned away
 const ALLOWED = (process.env.ALLOWED_ORIGINS || "https://markcherrie.github.io").split(",").map(s => s.trim()).filter(Boolean);
 const UPSTREAM = "wss://stream.aisstream.io/v0/stream";
 const TYPES = ["PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport", "ShipStaticData", "StaticDataReport"];
@@ -71,7 +75,8 @@ const server = http.createServer((req, res) => {
   if (box.length !== 4 || box.some(v => !Number.isFinite(v)) || box[0] >= box[2] || box[1] >= box[3]) {
     res.writeHead(400, cors); res.end("bbox=south,west,north,east"); return;
   }
-  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", ...cors });
+  if (clients.size >= MAX_CLIENTS) { res.writeHead(503, cors); res.end("busy — try again shortly"); return; }
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no", ...cors });
   const c = { res, box };
   clients.add(c);
   send(c, "status", { upstream: upstreamState });
@@ -146,7 +151,7 @@ function staticPatch(b) {
   return out;
 }
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`Site explorer ship relay on http://localhost:${PORT}  (allowed sites: file pages, localhost, ${ALLOWED.join(", ")})`);
+server.listen(PORT, HOST, () => {
+  console.log(`Site explorer ship relay on http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}  (allowed sites: file pages, localhost, ${ALLOWED.join(", ")})`);
   connect();
 });

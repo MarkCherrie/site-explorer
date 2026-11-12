@@ -494,7 +494,7 @@
     <summary>Sea traffic</summary>
     <div class="osec-body">
     <div>
-      <label class="check"><input type="checkbox" id="shipOn"> Live ships (aisstream.io, via your local relay)</label>
+      <label class="check"><input type="checkbox" id="shipOn"> Live ships (aisstream.io)</label>
       <div id="shipMsg" class="small muted" style="margin-left:24px"></div>
     </div>
     <label id="shipRelayRow" hidden><span>Relay address</span>
@@ -1296,7 +1296,7 @@ TOURS.splice(3, 0, {
         await t.waitFor(() => viewer.wavesReady() || /responding|reached|rate limit|failed|No wave|No sea/.test($("waveMsg").textContent), 25000);
         await t.sleep(2500);
     } },
-    { title: "<b>Live ships</b> · through your local relay", async run(t) {   // carries on if the relay isn't running
+    { title: "<b>Live ships</b> · AIS positions from aisstream.io", async run(t) {   // carries on if the relay isn't reachable
         tick("shipOn");
         await t.sleep(3500);
     } },
@@ -3618,6 +3618,10 @@ const viewer = (() => {
   ];
   const shipKind = t => SHIP_KINDS.find(k => Number.isFinite(t) && t > 0 ? k.test(t) : k.key === "other");
   const ships = { on: false, trails: true, size: 1, es: null, map: new Map(), mesh: null, tracks: null, status: "", relay: "", lastMsg: 0, list: [] };
+  // the published site uses the hosted relay (Cloud Run); local copies use one running on this computer
+  const HOSTED_RELAY = "https://ais-relay-223730248599.europe-west2.run.app";
+  const onPublishedSite = /\.github\.io$/.test(location.hostname);
+  if (onPublishedSite) $("shipRelay").value = HOSTED_RELAY;
   const shipGeo = (() => {   // hull pointing +x (east), ~1 unit long, with a small bridge at the stern
     const sh = new THREE.Shape([[-0.5, -0.17], [0.22, -0.17], [0.5, 0], [0.22, 0.17], [-0.5, 0.17]].map(([x, y]) => new THREE.Vector2(x, y)));
     const hull = new THREE.ExtrudeGeometry(sh, { depth: 0.16, bevelEnabled: false });
@@ -3648,8 +3652,10 @@ const viewer = (() => {
     es.addEventListener("ship", e => { addShip(JSON.parse(e.data)); });
     es.onerror = () => {
       if (es.readyState === EventSource.CLOSED || !ships.lastMsg) {
-        $("shipMsg").innerHTML = `Can't reach the relay at ${ships.relay}. Start it in a terminal:<br>` +
-          `<code>cd viewer/tools/ais-relay &amp;&amp; AISSTREAM_API_KEY_FILE=path/to/apikey.txt node relay.mjs</code>`;
+        $("shipMsg").innerHTML = ships.relay === HOSTED_RELAY
+          ? `The ship service isn't responding — it may be starting up; it will keep trying.`
+          : `Can't reach the relay at ${ships.relay}. Start it in a terminal:<br>` +
+            `<code>cd viewer/tools/ais-relay &amp;&amp; AISSTREAM_API_KEY_FILE=path/to/apikey.txt node relay.mjs</code>`;
       }
     };
   }

@@ -25,7 +25,7 @@ the power network and live ships.
 - Hills: [Database of British and Irish Hills](https://www.hills-database.co.uk) v18.6 (CC BY 4.0)
 - Deprivation: SIMD 2020v2, Scottish Government (OGL)
 - Substations: SP Energy Networks and SSEN Distribution open data (CC BY 4.0)
-- Live ships: [aisstream.io](https://aisstream.io), through a relay (see `tools/ais-relay/`)
+- Live ships: [aisstream.io](https://aisstream.io), through a small relay that keeps the API key private (`tools/ais-relay/`; hosted on Google Cloud Run, starting on demand)
 - Search: Nominatim / OpenStreetMap
 
 `tools/` holds the scripts that build the files in `data/`, and the ship relay.
