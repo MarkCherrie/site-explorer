@@ -1,0 +1,8 @@
+{
+  "name": "site-explorer-ais-relay",
+  "private": true,
+  "type": "module",
+  "description": "Local relay that passes aisstream.io ship positions to the Site explorer",
+  "scripts": { "start": "node relay.mjs" },
+  "dependencies": { "ws": "8.18.0" }
+}
